@@ -7,6 +7,9 @@ visited-address set, and output file.
 The generated artifact uses PyHeap's `.pyheap` v1 format, so existing PyHeap UI and Doctor analysis
 can read it.
 
+Pydump is inspired by [PyHeap](https://github.com/ivanyu/pyheap), whose GDB-based heap dumper,
+artifact format, and analysis workflow established the foundation for this project.
+
 ## Status
 
 Pydump is alpha software. The protocol, Collector, artifact writer, and CPython 3.10+ native agent
