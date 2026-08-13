@@ -24,9 +24,13 @@ artifact 均兼容。现有 PyHeap UI 仍可读取 artifact；Pydump Analyzer �
 `pydump.analysis/v1`，消费方不需要理解 Pydump 内部采集协议。兼容指读取结果和对象图语义兼容，
 不要求两个 dumper 生成字节完全相同的文件。
 
-支持范围是 Linux glibc、常规 GIL 构建的 CPython 3.10 及以上，首个验证矩阵覆盖 3.10–3.14、
-x86_64 和 AArch64。新增 CPython minor 必须先补齐 adapter 和真实 attach 测试。free-threaded CPython、
-多个独立解释器以及 musl 不在当前支持范围；兼容性探测无法确认时必须在遍历前失败。
+支持范围是 Linux glibc 2.17 及以上、常规 GIL 构建的 CPython 3.10 及以上，首个验证矩阵覆盖
+3.10–3.14、x86_64 和 AArch64。Agent 使用 CPython 的 `PyThread_start_new_thread` 创建采集线程，不能
+直接链接现代 glibc 的 `pthread_create` / `pthread_detach`，否则即使功能相同，也会把目标运行时门槛
+无意抬高到构建机的 glibc 版本。Collector 自身可运行在独立的 musl 容器；glibc baseline 只约束被
+目标 CPython `dlopen` 的 Agent。新增 CPython minor 必须先补齐 adapter 和真实 attach 测试。
+free-threaded CPython、多个独立解释器以及 musl 目标不在当前支持范围；兼容性探测无法确认时必须在
+遍历前失败。
 
 ## 采集流程
 
@@ -35,7 +39,7 @@ x86_64 和 AArch64。新增 CPython minor 必须先补齐 adapter 和真实 atta
   ↓
 Collector 创建临时 artifact 和目标可见的 Unix socket
   ↓
-GDB 在安全的 Python 执行点 dlopen 对应版本的 C Agent
+GDB 通过 pending call 等待 Python 执行安全点，再 dlopen 对应版本的 C Agent
   ↓
 Agent 启动线程，GDB detach，Agent 获取 GIL 并暂停自动 GC
   ↓
@@ -50,9 +54,16 @@ Collector 写完 .pyheap v1，回填对象数并校验 footer
 Agent 恢复 GC、释放 GIL；Collector 原子交付 artifact 并清理 session
 ```
 
-GDB 只承担跨 namespace attach、加载共享库和调用启动入口，不执行完整 dump，也不通过
-`PyRun_String` 向目标解释器注入 Python 脚本。Agent 在线程中等待 GIL，因此 snapshot 的起点是 Agent
-成功获取 GIL 并完成握手的时刻，而不是 GDB 最初 attach 的时刻。
+GDB 只承担跨 namespace attach、等待安全点、加载共享库和调用启动入口，不执行完整 dump，也不通过
+`PyRun_String` 向目标解释器注入 Python 脚本。Attach 后，Collector 先在空指针输入下安全返回的
+`PyCallable_Check` 设置一次性断点，再通过线程安全的 `Py_AddPendingCall` 请求解释器执行这个 no-op
+callback。解释器在下一个 eval breaker 安全点命中断点后，GDB 才加载 Agent。不能使用
+`_PyEval_EvalFrameDefault` 的“下一次调用”作为安全点：CPython 3.11 及以上会内联 Python-to-Python
+frame，长期运行的现有 eval loop 不保证再次进入该函数。目标若一直不返回解释器安全点，采集应按
+deadline 失败，不能退回任意指令位置强制加载。
+
+Agent 在线程中等待 GIL，因此 snapshot 的起点是 Agent 成功获取 GIL 并完成握手的时刻，而不是 GDB
+最初 attach 或 pending call 入队的时刻。
 
 Agent 获取 GIL 后显式暂停自动 GC，并在整个地址有效期内持有 GIL。Collector 保存的是裸对象地址，
 不是目标进程中的强引用；因此 Agent 不得在图遍历期间执行可能修改对象图的用户代码。正常完成、协议失败、
@@ -162,7 +173,9 @@ session nonce；任一不一致立即终止，不能尝试降级解析。
 - **内存归属**：在 10 万和 100 万对象 fixture 上分别测量目标进程与 Collector。目标侧增量必须受固定
   budget 约束且不随对象数线性增长，Collector 增量允许随对象数增长；目标进程不得打开 dump 文件。
 - **真实 attach 矩阵**：CPython 3.10–3.14 × x86_64/AArch64 使用 native Linux 环境执行 GDB attach；
-  QEMU 只用于交叉构建和基础 smoke test，不能替代发布门禁。
+  同时覆盖已进入 eval loop 的 CPU 任务和从阻塞 syscall 返回的任务，防止安全点只对新启动 frame
+  生效。发布 Agent 的 ELF symbol version 不得高于 `GLIBC_2.17`。QEMU 只用于交叉构建和基础 smoke
+  test，不能替代发布门禁。
 - **跨语言 Analyzer**：Python 与 Go 对共享 golden corpus 产出相同 JSON；大堆 fixture 还需比较耗时和
   峰值 RSS。Doctor 等消费方只依赖 `pydump.analysis/v1`，不依赖具体语言实现。
 

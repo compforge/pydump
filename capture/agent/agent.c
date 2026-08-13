@@ -9,7 +9,6 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -575,11 +574,10 @@ connect_collector(const char *path)
     return fd;
 }
 
-static void *
+static void
 session_main(void *argument)
 {
     session_args *args = argument;
-    pthread_detach(pthread_self());
     int fd = connect_collector(args->socket_path);
     if (fd < 0) {
         goto done;
@@ -614,7 +612,6 @@ session_main(void *argument)
 done:
     free(args);
     atomic_flag_clear(&session_active);
-    return NULL;
 }
 
 static int
@@ -656,11 +653,11 @@ pydump_start(const char *socket_path, const char *nonce_hex)
         return 5;
     }
 
-    pthread_t thread;
-    int result = pthread_create(&thread, NULL, session_main, args);
-    if (result != 0) {
+    unsigned long thread = PyThread_start_new_thread(session_main, args);
+    if (thread == PYTHREAD_INVALID_THREAD_ID) {
         free(args);
         atomic_flag_clear(&session_active);
+        return 6;
     }
-    return result;
+    return 0;
 }
