@@ -9,7 +9,8 @@ Pydump 是面向存量 CPython 进程的低目标内存 heap dumper。它通过�
 项目内核由 Capture、Contract、Analyzer 三部分组成：Capture 负责取得事实并原子交付 artifact；Contract
 是采集、分析实现和消费方的语言中立边界；Analyzer 只离线读取 artifact。项目不负责 Collector 的容器
 放置、Kubernetes 编排、UI 或 Doctor 业务集成。Capture 当前支持 Linux glibc、常规 GIL 构建的 CPython
-3.10 及以上；free-threaded CPython、多独立解释器和 musl 不在支持范围。
+3.10 及以上；注入目标的 glibc baseline 是 2.17。free-threaded CPython、多独立解释器和 musl 不在
+支持范围。
 
 ## 代码地图与核心模块
 

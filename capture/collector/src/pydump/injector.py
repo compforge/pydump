@@ -36,8 +36,10 @@ def inject(
     if gdb is None:
         raise PydumpError("gdb executable was not found")
 
-    # The breakpoint makes dlopen happen at a normal Python evaluation point. Calling the Agent
-    # directly while GDB interrupted an allocator or GC mutation would be unsafe.
+    # CPython 3.11+ inlines Python-to-Python frame calls, so waiting for another
+    # _PyEval_EvalFrameDefault entry can block forever. Py_AddPendingCall marks the eval breaker;
+    # its NULL-safe PyCallable_Check callback gives GDB a deterministic interpreter safe point.
+    # Loading the Agent before that point could interrupt an allocator or GC mutation.
     command = [
         gdb,
         "--batch",
@@ -51,7 +53,17 @@ def inject(
         "-ex",
         "set unwindonsignal on",
         "-ex",
-        "break _PyEval_EvalFrameDefault",
+        "break PyCallable_Check",
+        "-ex",
+        (
+            "set $pydump_pending=(int)Py_AddPendingCall("
+            "(int (*)(void *))PyCallable_Check, (void *)0)"
+        ),
+        "-ex",
+        (
+            'if $pydump_pending != 0\nprintf "PYDUMP_PENDING_CALL_FAILED: %d\\n", '
+            "$pydump_pending\nquit 80\nend"
+        ),
         "-ex",
         "continue",
         "-ex",

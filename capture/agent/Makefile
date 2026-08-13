@@ -8,9 +8,9 @@ CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -fPIC -fvisibility=hidden -Wall -Wextra -Werror -Wpedantic
 CPPFLAGS += -DPy_BUILD_CORE $(shell $(PYTHON)-config --includes)
 ifeq ($(shell uname -s),Darwin)
-LDFLAGS += -bundle -undefined dynamic_lookup -pthread
+LDFLAGS += -bundle -undefined dynamic_lookup
 else
-LDFLAGS += -shared -pthread
+LDFLAGS += -shared
 endif
 
 .PHONY: all clean
