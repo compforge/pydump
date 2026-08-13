@@ -40,9 +40,10 @@ _UNSIGNED_LONG = struct.Struct("!Q")
 class HeapWriter:
     """Streaming writer for the public PyHeap v1 artifact format."""
 
-    def __init__(self, file: BinaryIO, *, with_str_repr: bool) -> None:
+    def __init__(self, file: BinaryIO, *, with_str_repr: bool, sync: bool = True) -> None:
         self._file = file
         self._with_str_repr = with_str_repr
+        self._sync = sync
         self._object_count_offset: int | None = None
         self._object_count = 0
 
@@ -139,7 +140,8 @@ class HeapWriter:
             self._write_long_string(name)
         self._write_u64(MAGIC)
         self._file.flush()
-        os.fsync(self._file.fileno())
+        if self._sync:
+            os.fsync(self._file.fileno())
 
     def _write_short_string(self, value: str) -> None:
         encoded = _encode_string(value)

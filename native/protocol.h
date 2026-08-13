@@ -3,10 +3,12 @@
 
 #include <stdint.h>
 
-#define PYDUMP_PROTOCOL_VERSION 1
+#define PYDUMP_PROTOCOL_VERSION 2
 #define PYDUMP_NONCE_SIZE 16
 #define PYDUMP_MAX_PAYLOAD (1U << 20)
 #define PYDUMP_IO_BATCH 256
+#define PYDUMP_BULK_PAYLOAD_SIZE (32U << 10)
+#define PYDUMP_RECORD_HEADER_SIZE 5
 
 enum pydump_frame_kind {
     PYDUMP_HELLO = 1,
@@ -28,6 +30,7 @@ enum pydump_frame_kind {
     PYDUMP_ERROR = 17,
     PYDUMP_WARNING = 18,
     PYDUMP_CANCEL = 19,
+    PYDUMP_BULK_BATCH = 20,
 };
 
 enum pydump_content_kind {

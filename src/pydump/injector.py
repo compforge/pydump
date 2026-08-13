@@ -76,7 +76,7 @@ def inject(
             f'("{_gdb_string(socket_target_path)}", "{nonce.hex()}")'
         ),
         "-ex",
-        ('if $pydump_rc != 0\nprintf "PYDUMP_START_FAILED: %d\\n", $pydump_rc' "\nquit 83\nend"),
+        ('if $pydump_rc != 0\nprintf "PYDUMP_START_FAILED: %d\\n", $pydump_rc\nquit 83\nend'),
         "-ex",
         "detach",
         "-ex",

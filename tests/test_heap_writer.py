@@ -52,6 +52,18 @@ def test_writer_requires_all_well_known_types() -> None:
         raise AssertionError("missing well-known type was accepted")
 
 
+def test_writer_can_measure_an_in_memory_sink_without_fsync() -> None:
+    output = io.BytesIO()
+    known = _well_known()
+    writer = HeapWriter(output, with_str_repr=False, sync=False)
+    writer.write_header(known)
+    writer.write_threads([])
+    writer.begin_objects()
+    writer.finish({})
+
+    assert struct.unpack_from("!Q", output.getvalue(), len(output.getvalue()) - 8)[0] == MAGIC
+
+
 def test_upstream_pyheap_reader_accepts_artifact(tmp_path: Path) -> None:
     """The external contract is a real upstream reader, not our own footer check."""
     try:

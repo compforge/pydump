@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import struct
+from collections import deque
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Final
@@ -9,12 +10,14 @@ from typing import Final
 from pydump.errors import ProtocolError
 
 MAGIC: Final = b"PYDP"
-VERSION: Final = 1
+VERSION: Final = 2
 NONCE_SIZE: Final = 16
 MAX_PAYLOAD: Final = 1 << 20
 ADDRESS_SIZE: Final = 8
+BULK_PAYLOAD_SIZE: Final = 32 << 10
 
 _HEADER = struct.Struct("!4sBBHI")
+_RECORD_HEADER = struct.Struct("!BI")
 _HELLO = struct.Struct("!BBBB16s")
 _OPTIONS = struct.Struct("!iB")
 _OBJECT_BEGIN = struct.Struct("!QQIBH")
@@ -40,6 +43,22 @@ class FrameKind(IntEnum):
     ERROR = 17
     WARNING = 18
     CANCEL = 19
+    BULK_BATCH = 20
+
+
+_BULK_RECORD_KINDS: Final = frozenset(
+    {
+        FrameKind.ROOT_BATCH,
+        FrameKind.OBJECT_BEGIN,
+        FrameKind.REFERENTS,
+        FrameKind.SEQUENCE_CONTENT,
+        FrameKind.DICT_CONTENT,
+        FrameKind.ATTRIBUTES,
+        FrameKind.PREVIEW,
+        FrameKind.OBJECT_END,
+        FrameKind.WARNING,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -66,18 +85,45 @@ class ObjectBegin:
     type_name: str
 
 
+@dataclass
+class SocketStats:
+    sent_bytes: int = 0
+    received_bytes: int = 0
+    sent_frames: int = 0
+    received_frames: int = 0
+    received_records: int = 0
+
+
 class FramedSocket:
     """Length-delimited Agent protocol with strict frame and payload validation."""
 
     def __init__(self, sock: socket.socket) -> None:
         self._socket = sock
+        self._pending: deque[Frame] = deque()
+        self.stats = SocketStats()
 
     def send(self, kind: FrameKind, payload: bytes = b"") -> None:
         if len(payload) > MAX_PAYLOAD:
             raise ProtocolError(f"{kind.name} payload exceeds {MAX_PAYLOAD} bytes")
-        self._socket.sendall(_HEADER.pack(MAGIC, VERSION, kind, 0, len(payload)) + payload)
+        wire = _HEADER.pack(MAGIC, VERSION, kind, 0, len(payload)) + payload
+        self._socket.sendall(wire)
+        self.stats.sent_bytes += len(wire)
+        self.stats.sent_frames += 1
 
     def receive(self) -> Frame:
+        if self._pending:
+            return self._pending.popleft()
+        frame = self._receive_wire_frame()
+        if frame.kind is not FrameKind.BULK_BATCH:
+            return frame
+        records = decode_bulk_batch(frame.payload)
+        if not records:
+            raise ProtocolError("BULK_BATCH must contain at least one record")
+        self.stats.received_records += len(records)
+        self._pending.extend(records)
+        return self._pending.popleft()
+
+    def _receive_wire_frame(self) -> Frame:
         header = self._receive_exact(_HEADER.size)
         magic, version, raw_kind, flags, payload_size = _HEADER.unpack(header)
         if magic != MAGIC:
@@ -92,7 +138,10 @@ class FramedSocket:
             kind = FrameKind(raw_kind)
         except ValueError as error:
             raise ProtocolError(f"unknown frame kind {raw_kind}") from error
-        return Frame(kind=kind, payload=self._receive_exact(payload_size))
+        payload = self._receive_exact(payload_size)
+        self.stats.received_bytes += _HEADER.size + payload_size
+        self.stats.received_frames += 1
+        return Frame(kind=kind, payload=payload)
 
     def _receive_exact(self, size: int) -> bytes:
         chunks = bytearray(size)
@@ -104,6 +153,41 @@ class FramedSocket:
                 raise ProtocolError(f"agent disconnected with {size - received} bytes pending")
             received += count
         return bytes(chunks)
+
+
+def encode_bulk_batch(records: list[Frame] | tuple[Frame, ...]) -> bytes:
+    payload = bytearray()
+    for record in records:
+        if record.kind not in _BULK_RECORD_KINDS:
+            raise ProtocolError(f"{record.kind.name} is not a bulk record")
+        payload.extend(_RECORD_HEADER.pack(record.kind, len(record.payload)))
+        payload.extend(record.payload)
+    if len(payload) > MAX_PAYLOAD:
+        raise ProtocolError(f"BULK_BATCH payload exceeds {MAX_PAYLOAD} bytes")
+    return bytes(payload)
+
+
+def decode_bulk_batch(payload: bytes) -> list[Frame]:
+    """Decode bounded wire aggregation while preserving logical record order."""
+    records: list[Frame] = []
+    offset = 0
+    while offset < len(payload):
+        if len(payload) - offset < _RECORD_HEADER.size:
+            raise ProtocolError("BULK_BATCH ends in a partial record header")
+        raw_kind, record_size = _RECORD_HEADER.unpack_from(payload, offset)
+        offset += _RECORD_HEADER.size
+        end = offset + record_size
+        if end > len(payload):
+            raise ProtocolError("BULK_BATCH ends in a partial record payload")
+        try:
+            kind = FrameKind(raw_kind)
+        except ValueError as error:
+            raise ProtocolError(f"BULK_BATCH contains unknown record kind {raw_kind}") from error
+        if kind not in _BULK_RECORD_KINDS:
+            raise ProtocolError(f"BULK_BATCH contains invalid record {kind.name}")
+        records.append(Frame(kind=kind, payload=payload[offset:end]))
+        offset = end
+    return records
 
 
 def encode_hello(hello: Hello) -> bytes:

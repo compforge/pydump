@@ -35,7 +35,7 @@ dev = [
 packages = ["src/pydump"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "native", "README.md", "LICENSE", "NOTICE", "Makefile"]
+include = ["src", "tests", "native", "benchmarks", "README.md", "LICENSE", "NOTICE", "Makefile"]
 
 [tool.ruff]
 line-length = 100

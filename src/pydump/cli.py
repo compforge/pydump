@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from pydump.collector import Collector
+from pydump.collector import CaptureStats, Collector
 from pydump.errors import PydumpError
 from pydump.injector import inject, install_agent
 from pydump.target import resolve_target, verify_agent
@@ -74,6 +74,7 @@ def run(arguments: argparse.Namespace) -> Path:
             listener.listen(1)
             listener.settimeout(arguments.timeout)
             injection_error: list[BaseException] = []
+            attach_started = time.monotonic()
 
             def attach() -> None:
                 try:
@@ -116,12 +117,15 @@ def run(arguments: argparse.Namespace) -> Path:
                     progress=progress,
                 )
                 path, count = collector.capture(connection, arguments.file)
+                stats = collector.stats
             thread.join(arguments.timeout)
             if injection_error:
                 path.unlink(missing_ok=True)
                 raise injection_error[0]
             print()
             print(f"Heap file saved: {path} ({count} objects, {time.monotonic() - started:.2f}s)")
+            if stats is not None:
+                _print_stats(stats, attach_seconds=started - attach_started)
             return path
 
 
@@ -150,3 +154,32 @@ def _bundled_agent(version: tuple[int, int]) -> Path:
     if not candidate.exists():
         raise PydumpError(f"no bundled agent {name}; pass --agent with a matching build")
     return candidate
+
+
+def _print_stats(stats: CaptureStats, *, attach_seconds: float) -> None:
+    object_rate = stats.object_count / stats.objects_seconds if stats.objects_seconds else 0.0
+    wire_rate = (
+        stats.wire_received_bytes / stats.target_pause_seconds / (1 << 20)
+        if stats.target_pause_seconds
+        else 0.0
+    )
+    print(
+        "Capture profile: "
+        f"attach={attach_seconds:.2f}s, hello-wait={stats.hello_wait_seconds:.2f}s, "
+        f"setup={stats.setup_seconds:.2f}s, roots={stats.roots_seconds:.2f}s, "
+        f"objects={stats.objects_seconds:.2f}s, target-pause≈{stats.target_pause_seconds:.2f}s, "
+        f"finalize={stats.artifact_finalize_seconds:.2f}s"
+    )
+    print(
+        "Capture throughput: "
+        f"{object_rate:,.0f} objects/s, {wire_rate:.1f} MiB/s wire, "
+        f"{stats.referent_count:,} referents, "
+        f"{stats.wire_received_frames:,} received frames, "
+        f"{stats.wire_sent_frames:,} sent frames, {stats.bulk_records:,} bulk records"
+    )
+    print(
+        "Collector peaks: "
+        f"pending={stats.pending_peak:,}, scheduled={stats.scheduled_peak:,}, "
+        f"max-rss={stats.collector_max_rss_bytes / (1 << 20):.1f} MiB, "
+        f"artifact={stats.artifact_bytes / (1 << 20):.1f} MiB"
+    )
