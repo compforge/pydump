@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from pydump import cli
 from pydump.collector import Collector
 from pydump.model import HeapObject
 from pydump.protocol import (
@@ -24,7 +25,7 @@ from pydump.protocol import (
     "PYDUMP_NATIVE_AGENT" not in os.environ,
     reason="set PYDUMP_NATIVE_AGENT to a native Agent built for this interpreter",
 )
-def test_native_agent_streams_a_real_cpython_heap(tmp_path: Path) -> None:
+def test_native_agent_schedules_and_streams_a_real_cpython_heap(tmp_path: Path) -> None:
     agent = Path(os.environ["PYDUMP_NATIVE_AGENT"]).resolve()
     nonce = os.urandom(16)
     target_code = """
@@ -33,7 +34,7 @@ import sys
 import time
 
 agent = ctypes.CDLL(sys.argv[1])
-start = agent.pydump_start
+start = agent.pydump_schedule
 start.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 start.restype = ctypes.c_int
 result = start(sys.argv[2].encode(), sys.argv[3].encode())
@@ -49,6 +50,61 @@ time.sleep(60)
             _capture_native(listener, socket_path, agent, nonce, target_code, tmp_path)
         finally:
             listener.close()
+
+
+@pytest.mark.skipif(
+    "PYDUMP_NATIVE_AGENT" not in os.environ or "PYDUMP_PTRACE_INJECTOR" not in os.environ,
+    reason="set matching native Agent and ptrace injector paths",
+)
+def test_ptrace_injector_captures_a_real_cpython_heap(tmp_path: Path) -> None:
+    agent = Path(os.environ["PYDUMP_NATIVE_AGENT"]).resolve()
+    injector = Path(os.environ["PYDUMP_PTRACE_INJECTOR"]).resolve()
+    output = tmp_path / "ptrace.pyheap"
+    target_code = """
+import ctypes
+import os
+import time
+
+libc = ctypes.CDLL(None)
+if libc.prctl(0x59616D61, -1, 0, 0, 0) != 0:
+    raise RuntimeError("PR_SET_PTRACER_ANY failed")
+heap = [{"index": index} for index in range(10_000)]
+print(os.getpid(), len(heap), flush=True)
+while True:
+    time.sleep(1)
+"""
+    target = subprocess.Popen(
+        [sys.executable, "-c", target_code],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert target.stdout is not None
+        ready = target.stdout.readline().split()
+        assert ready[1] == "10000"
+        arguments = cli.parser().parse_args(
+            [
+                "--pid",
+                ready[0],
+                "--file",
+                str(output),
+                "--agent",
+                str(agent),
+                "--injector",
+                str(injector),
+                "--no-attribute",
+                "--str-repr-len",
+                "-1",
+            ]
+        )
+        assert cli.run(arguments) == output
+    finally:
+        if target.poll() is None:
+            target.terminate()
+        target.wait(timeout=5)
+
+    assert output.stat().st_size > 0
 
 
 @pytest.mark.skipif(

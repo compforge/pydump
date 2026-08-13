@@ -84,7 +84,7 @@ def test_injector_teardown_failure_preserves_delivered_artifact(
             return path, 1
 
     def fail_after_capture(**_kwargs) -> None:
-        raise PydumpError("GDB detach failed")
+        raise PydumpError("ptrace injector detach failed")
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     monkeypatch.setattr(cli, "resolve_target", lambda *_args: target)
@@ -100,7 +100,7 @@ def test_injector_teardown_failure_preserves_delivered_artifact(
     arguments = cli.parser().parse_args(
         ["--pid", "42", "--file", str(output), "--agent", str(agent)]
     )
-    with pytest.raises(PydumpError, match="GDB detach failed"):
+    with pytest.raises(PydumpError, match="ptrace injector detach failed"):
         cli.run(arguments)
 
     assert output.read_bytes() == b"complete artifact"
@@ -151,7 +151,7 @@ def test_agent_connect_timeout_prefers_completed_injector_error(
             return None
 
     def fail_injection(**_kwargs) -> None:
-        raise PydumpError("GDB did not confirm Agent start: XSAVE failed")
+        raise PydumpError("ptrace injector did not confirm Agent start")
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     monkeypatch.setattr(cli, "resolve_target", lambda *_args: target)
@@ -166,5 +166,5 @@ def test_agent_connect_timeout_prefers_completed_injector_error(
     arguments = cli.parser().parse_args(
         ["--pid", "42", "--file", str(output), "--agent", str(agent)]
     )
-    with pytest.raises(PydumpError, match="XSAVE failed"):
+    with pytest.raises(PydumpError, match="did not confirm Agent start"):
         cli.run(arguments)

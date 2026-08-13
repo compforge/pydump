@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pydump.injector as injector
 import pytest
@@ -8,85 +9,75 @@ from pydump.errors import PydumpError
 from pydump.target import Target
 
 
-def test_inject_waits_for_pending_call_safepoint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_inject_uses_explicit_ptrace_injector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "pydump-injector"
+    executable.touch(mode=0o755)
     captured: list[str] = []
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.extend(command)
         return subprocess.CompletedProcess(command, 0, "PYDUMP_AGENT_STARTED=0\n")
 
-    monkeypatch.setattr(injector.shutil, "which", lambda _command: "/usr/bin/gdb")
     monkeypatch.setattr(injector.subprocess, "run", run)
 
     injector.inject(
-        target=Target(host_pid=42, namespace_pid=1, python_minor=(3, 12)),
+        target=Target(host_pid=42, namespace_pid=1, python_minor=(3, 11)),
         agent_target_path="/tmp/pydump-agent.so",
         socket_target_path="/tmp/pydump/collector.sock",
         nonce=bytes.fromhex("00112233445566778899aabbccddeeff"),
         timeout=30,
+        injector_path=executable,
     )
 
-    commands = [captured[index + 1] for index, value in enumerate(captured[:-1]) if value == "-ex"]
-    breakpoint = commands.index("break PyCallable_Check")
-    pending_call = next(
-        index for index, value in enumerate(commands) if value.startswith("set $pydump_pending=")
-    )
-    resume = commands.index("continue")
-    load_agent = next(
-        index for index, value in enumerate(commands) if value.startswith("set $pydump_agent=")
-    )
-
-    assert breakpoint < pending_call < resume < load_agent
-    assert "Py_AddPendingCall" in commands[pending_call]
-    assert all("_PyEval_EvalFrameDefault" not in value for value in commands)
-    assert all("\n" not in value for value in commands)
+    assert captured[0] == str(executable)
+    assert captured[captured.index("--pid") + 1] == "42"
+    assert captured[captured.index("--nonce") + 1] == "00112233445566778899aabbccddeeff"
+    assert captured[captured.index("--timeout") + 1] == "30s"
 
 
-def test_inject_rejects_gdb_inferior_call_failure_with_zero_exit(
-    monkeypatch: pytest.MonkeyPatch,
+def test_inject_includes_ptrace_diagnostic_when_injector_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    output = """\
-Couldn't write extended state status: Bad address.
-Value can't be converted to integer.
-"""
-    monkeypatch.setattr(injector.shutil, "which", lambda _command: "/usr/bin/gdb")
+    executable = tmp_path / "pydump-injector"
+    executable.touch(mode=0o755)
     monkeypatch.setattr(
         injector.subprocess,
         "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output),
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, "pydump-injector: attach PID 42: operation not permitted\n"
+        ),
     )
 
-    with pytest.raises(PydumpError, match="Couldn't write extended state status: Bad address"):
+    with pytest.raises(PydumpError, match="attach PID 42: operation not permitted"):
         injector.inject(
             target=Target(host_pid=42, namespace_pid=1, python_minor=(3, 11)),
             agent_target_path="/tmp/pydump-agent.so",
             socket_target_path="/tmp/pydump/collector.sock",
             nonce=bytes.fromhex("00112233445566778899aabbccddeeff"),
             timeout=30,
+            injector_path=executable,
         )
 
 
-def test_inject_includes_gdb_diagnostic_when_gdb_returns_nonzero(
-    monkeypatch: pytest.MonkeyPatch,
+def test_inject_rejects_success_without_agent_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    output = "Couldn't write extended state status: Bad address.\n"
-    monkeypatch.setattr(injector.shutil, "which", lambda _command: "/usr/bin/gdb")
+    executable = tmp_path / "pydump-injector"
+    executable.touch(mode=0o755)
     monkeypatch.setattr(
         injector.subprocess,
         "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 80, output),
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, ""),
     )
 
-    with pytest.raises(
-        PydumpError,
-        match=(
-            "GDB failed for PID 42 with code 80: Couldn't write extended state status: Bad address"
-        ),
-    ):
+    with pytest.raises(PydumpError, match="did not confirm Agent start"):
         injector.inject(
             target=Target(host_pid=42, namespace_pid=1, python_minor=(3, 11)),
             agent_target_path="/tmp/pydump-agent.so",
             socket_target_path="/tmp/pydump/collector.sock",
             nonce=bytes.fromhex("00112233445566778899aabbccddeeff"),
             timeout=30,
+            injector_path=executable,
         )

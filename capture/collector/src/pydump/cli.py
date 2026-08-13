@@ -50,6 +50,12 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="native agent shared library built for the target CPython minor",
     )
+    result.add_argument(
+        "--injector",
+        type=Path,
+        default=None,
+        help="native ptrace injector executable for the Collector architecture",
+    )
     result.add_argument("--timeout", type=float, default=30.0, help=argparse.SUPPRESS)
     return result
 
@@ -86,18 +92,19 @@ def run(arguments: argparse.Namespace) -> Path:
                         socket_target_path=socket_target_path,
                         nonce=nonce,
                         timeout=arguments.timeout,
+                        injector_path=arguments.injector,
                     )
                 except BaseException as error:
                     injection_error.append(error)
 
-            thread = threading.Thread(target=attach, name="pydump-gdb", daemon=True)
+            thread = threading.Thread(target=attach, name="pydump-attach", daemon=True)
             thread.start()
             deadline = attach_started + arguments.timeout
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     # inject() has the same deadline, so it is already completing here. Wait for
-                    # its specific GDB failure instead of racing it with a generic connect timeout.
+                    # its specific injector failure instead of racing it with a generic timeout.
                     thread.join()
                     if injection_error:
                         raise injection_error[0]

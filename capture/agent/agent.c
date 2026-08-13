@@ -54,6 +54,8 @@ typedef struct {
 } address_stream;
 
 static atomic_flag session_active = ATOMIC_FLAG_INIT;
+static atomic_flag schedule_active = ATOMIC_FLAG_INIT;
+static session_args scheduled_session;
 
 static uint64_t
 host_to_be64(uint64_t value)
@@ -621,11 +623,18 @@ decode_nonce(const char *hex, uint8_t nonce[PYDUMP_NONCE_SIZE])
         return -1;
     }
     for (size_t index = 0; index < PYDUMP_NONCE_SIZE; index++) {
-        unsigned int byte;
-        if (sscanf(hex + index * 2, "%2x", &byte) != 1) {
+        unsigned char high = (unsigned char)hex[index * 2];
+        unsigned char low = (unsigned char)hex[index * 2 + 1];
+        int high_value = high >= '0' && high <= '9'
+                             ? high - '0'
+                             : high >= 'a' && high <= 'f' ? high - 'a' + 10 : -1;
+        int low_value = low >= '0' && low <= '9'
+                            ? low - '0'
+                            : low >= 'a' && low <= 'f' ? low - 'a' + 10 : -1;
+        if (high_value < 0 || low_value < 0) {
             return -1;
         }
-        nonce[index] = (uint8_t)byte;
+        nonce[index] = (uint8_t)((high_value << 4) | low_value);
     }
     return 0;
 }
@@ -658,6 +667,48 @@ pydump_start(const char *socket_path, const char *nonce_hex)
         free(args);
         atomic_flag_clear(&session_active);
         return 6;
+    }
+    return 0;
+}
+
+static int
+start_scheduled_session(void *unused)
+{
+    (void)unused;
+    static const char hex_digits[] = "0123456789abcdef";
+    char nonce_hex[PYDUMP_NONCE_SIZE * 2 + 1] = {0};
+    for (size_t index = 0; index < PYDUMP_NONCE_SIZE; index++) {
+        nonce_hex[index * 2] = hex_digits[scheduled_session.nonce[index] >> 4];
+        nonce_hex[index * 2 + 1] = hex_digits[scheduled_session.nonce[index] & 0x0f];
+    }
+    int result = pydump_start(scheduled_session.socket_path, nonce_hex);
+    atomic_flag_clear(&schedule_active);
+    return result == 0 ? 0 : -1;
+}
+
+PYDUMP_EXPORT int
+pydump_schedule(const char *socket_path, const char *nonce_hex)
+{
+    if (socket_path == NULL || nonce_hex == NULL
+        || strlen(socket_path) >= sizeof(scheduled_session.socket_path)) {
+        return 2;
+    }
+    if (atomic_flag_test_and_set(&schedule_active)) {
+        return 3;
+    }
+    memcpy(scheduled_session.socket_path, socket_path, strlen(socket_path) + 1);
+    if (decode_nonce(nonce_hex, scheduled_session.nonce) < 0) {
+        atomic_flag_clear(&schedule_active);
+        return 5;
+    }
+
+    /* The ptrace injector calls this from a minimal clone task without the GIL.
+       Py_AddPendingCall does not require the caller to hold the GIL on the
+       supported CPython versions; keep this path allocation-free and run the
+       real start routine at the next pending-call safe point with the GIL held. */
+    if (Py_AddPendingCall(start_scheduled_session, NULL) != 0) {
+        atomic_flag_clear(&schedule_active);
+        return 7;
     }
     return 0;
 }
