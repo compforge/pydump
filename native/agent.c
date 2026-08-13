@@ -19,6 +19,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "object_facts.h"
 #include "protocol.h"
 
 #if PY_VERSION_HEX < 0x030A0000
@@ -259,34 +260,6 @@ send_roots(int fd)
     return send_frame(fd, PYDUMP_ROOTS_DONE, NULL, 0);
 }
 
-static uint32_t
-shallow_size(PyObject *object)
-{
-    PyTypeObject *type = Py_TYPE(object);
-    Py_ssize_t size = type->tp_basicsize;
-    if (type->tp_itemsize > 0 && !PyLong_Check(object)) {
-        Py_ssize_t variable_size = Py_SIZE(object);
-        if (variable_size > 0) {
-            size += variable_size * type->tp_itemsize;
-        }
-    }
-    if (PyList_CheckExact(object)) {
-        size = (Py_ssize_t)sizeof(PyListObject)
-               + ((PyListObject *)object)->allocated * (Py_ssize_t)sizeof(PyObject *);
-    }
-    if (PySet_CheckExact(object)) {
-        PySetObject *set = (PySetObject *)object;
-        size = (Py_ssize_t)sizeof(PySetObject);
-        if (set->table != set->smalltable) {
-            size += (set->mask + 1) * (Py_ssize_t)sizeof(setentry);
-        }
-    }
-    if (size < 0) {
-        return 0;
-    }
-    return size > UINT32_MAX ? UINT32_MAX : (uint32_t)size;
-}
-
 static enum pydump_content_kind
 content_kind(PyObject *object)
 {
@@ -308,7 +281,7 @@ content_kind(PyObject *object)
 static int
 send_object_begin(int fd, PyObject *object, enum pydump_content_kind kind)
 {
-    const char *type_name = Py_TYPE(object)->tp_name == NULL ? "<unknown>" : Py_TYPE(object)->tp_name;
+    const char *type_name = pydump_type_name(object);
     size_t name_length = strlen(type_name);
     if (name_length > UINT16_MAX) {
         name_length = UINT16_MAX;
@@ -319,7 +292,7 @@ send_object_begin(int fd, PyObject *object, enum pydump_content_kind kind)
     }
     uint64_t address = host_to_be64((uint64_t)(uintptr_t)object);
     uint64_t type_address = host_to_be64((uint64_t)(uintptr_t)Py_TYPE(object));
-    uint32_t size = htonl(shallow_size(object));
+    uint32_t size = htonl(pydump_shallow_size(object));
     uint16_t network_name_length = htons((uint16_t)name_length);
     memcpy(payload, &address, sizeof(address));
     memcpy(payload + 8, &type_address, sizeof(type_address));
