@@ -1,4 +1,4 @@
-# Pydump 设计
+# Pydump Kernel
 
 ## 理念与边界
 
@@ -6,16 +6,23 @@ Pydump 面向无法预先植入 profiler、也不能重启的 CPython 进程，�
 生成可离线分析的 heap artifact。它解决的核心问题不是降低 dump 本身的总资源成本，而是改变资源归属：
 目标进程只承担有界的采集 agent 开销，随堆规模增长的队列、去重索引和文件缓存由 Collector 承担。
 
-系统只有两个运行时角色：
+Kernel 由三个稳定概念组成：
 
-- **Collector** 负责 attach 编排、对象图遍历状态、artifact 写入和失败收口。它拥有全部随堆规模增长的
+- **Capture** 取得目标进程事实并原子交付 artifact。其中 Collector 负责 attach 编排、对象图遍历状态、
+  artifact 写入和失败收口，拥有全部随堆规模增长的
   内存和文件 page cache；具体如何部署 Collector 由调用方决定，不进入 Pydump 的采集模型。
-- **Agent** 是注入目标进程的 C 共享库。它在持有 GIL 时读取 Collector 指定的对象，通过有界 socket
-  协议返回事实，不保存全堆队列、visited set 或 dump 文件。
+- **Contract** 定义 Capture、各语言 Analyzer 和消费方的语言中立边界。当前输入是 PyHeap v1 artifact，
+  输出是 `pydump.analysis/v1`；共享 spec 与 golden corpus 是事实源。
+- **Analyzer** 在采集完成后离线读取 artifact，生成 summary 或 retained heap。实现语言和部署位置不进入
+  契约；Python 与 Go 实现不互相依赖。
 
-Pydump 保持 fork-pyheap 的操作面：`pyheap_dump` 命令、参数、默认值、主要退出行为和 `.pyheap` v1
-artifact 均兼容。现有 PyHeap UI、Doctor analyzer 和 `pyheap.analysis/v1` 链路无需理解 Pydump 内部协议。
-兼容指读取结果和对象图语义兼容，不要求两个 dumper 生成字节完全相同的文件。
+Capture 内的 **Agent** 是注入目标进程的 C 共享库。它在持有 GIL 时读取 Collector 指定的对象，通过
+有界 socket 协议返回事实，不保存全堆队列、visited set 或 dump 文件。
+
+Pydump 保持 fork-pyheap 的采集操作面：`pyheap_dump` 命令、参数、默认值、主要退出行为和 `.pyheap` v1
+artifact 均兼容。现有 PyHeap UI 仍可读取 artifact；Pydump Analyzer 输出独立的
+`pydump.analysis/v1`，消费方不需要理解 Pydump 内部采集协议。兼容指读取结果和对象图语义兼容，
+不要求两个 dumper 生成字节完全相同的文件。
 
 支持范围是 Linux glibc、常规 GIL 构建的 CPython 3.10 及以上，首个验证矩阵覆盖 3.10–3.14、
 x86_64 和 AArch64。新增 CPython minor 必须先补齐 adapter 和真实 attach 测试。free-threaded CPython、
@@ -93,15 +100,16 @@ locals、属性和字符串预览属于解释信息；某项无法安全取得�
 
 ### 离线分析不回到目标进程
 
-`pydump_analyzer` 是独立于采集链路的 headless 工具。它 mmap 已完成的 `.pyheap` 文件，在分析进程中
-构建对象模型；`retained-heap` 还会构建 inbound-reference index 和逐对象 retained-size 结果。上述结构
-都随对象数增长，因此必须由 Doctor Host、调试容器或其他有足够资源的离线环境承担，不能放回目标 Python
-进程，也不能为了补充解释信息再次 attach 目标进程。
+`pydump_analyzer` 是独立于采集链路的 headless 工具族。各语言实现读取已完成的 `.pyheap` 文件，在分析
+进程中构建对象模型；`retained-heap` 还会构建 inbound-reference index 和逐对象 retained-size 结果。
+上述结构都随对象数增长，因此必须由 Doctor Host、调试容器或其他有足够资源的离线环境承担，不能放回
+目标 Python 进程，也不能为了补充解释信息再次 attach 目标进程。
 
 `summary` 只做 artifact 读取和聚合，`retained-heap` 才执行更昂贵的引用图计算。两者输出同一个
-`pyheap.analysis/v1` JSON 契约，使 Doctor 等消费方无需依赖分析实现；Reader 保持 PyHeap v1 兼容，
-但 Analyzer 不包含 Flask、模板和静态资源，也不依赖旧 `pyheap_ui` 包。字符串表示保留文件 offset 并按需
-读取，避免 Analyzer 在载入阶段再复制整份字符串数据。
+`pydump.analysis/v1` JSON 契约，使 Doctor 等消费方无需依赖具体语言实现；Reader 保持 PyHeap v1
+兼容，但 Analyzer 不包含 Flask、模板和静态资源，也不依赖旧 `pyheap_ui` 包。Go 实现将 64 位地址映射
+为连续 `uint32` 索引，并用 CSR 数组保存 referent 与 inbound 图；Python 作为独立参考实现。字符串表示
+保留文件 offset 并按需读取，避免 Analyzer 在载入阶段再复制整份字符串数据。
 
 ### Full 是安全的静态元数据，不执行用户代码
 
@@ -155,8 +163,8 @@ session nonce；任一不一致立即终止，不能尝试降级解析。
   budget 约束且不随对象数线性增长，Collector 增量允许随对象数增长；目标进程不得打开 dump 文件。
 - **真实 attach 矩阵**：CPython 3.10–3.14 × x86_64/AArch64 使用 native Linux 环境执行 GDB attach；
   QEMU 只用于交叉构建和基础 smoke test，不能替代发布门禁。
-- **兼容消费方**：同一 artifact 通过现有 PyHeap UI 和 Doctor analyzer，Doctor 仅替换 dumper 资产即可
-  完成采集与报告。
+- **跨语言 Analyzer**：Python 与 Go 对共享 golden corpus 产出相同 JSON；大堆 fixture 还需比较耗时和
+  峰值 RSS。Doctor 等消费方只依赖 `pydump.analysis/v1`，不依赖具体语言实现。
 
 Apache-2.0 是项目及派生代码的许可边界。复用 PyHeap 的 CLI、namespace、writer 或 GDB 编排实现时，
 必须保留对应版权头和 NOTICE；Memray、Guppy 等项目只作为实现思路参考，实际代码复用遵循各自许可。

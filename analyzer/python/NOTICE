@@ -1,0 +1,5 @@
+Pydump Analyzer
+Copyright 2026 CompForge
+
+This product includes modified heap reader and retained-heap analysis code derived from PyHeap,
+Copyright 2022 Ivan Yurchenko, licensed under the Apache License, Version 2.0.

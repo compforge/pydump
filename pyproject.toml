@@ -1,42 +1,21 @@
-[build-system]
-requires = ["hatchling>=1.27"]
-build-backend = "hatchling.build"
-
 [project]
-name = "pydump"
-version = "0.1.0"
-description = "Low-target-memory heap dumper for live CPython processes"
-readme = "README.md"
+name = "pydump-workspace"
+version = "0.0.0"
 requires-python = ">=3.10"
-license = "Apache-2.0"
-authors = [{ name = "CompForge" }]
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Environment :: Console",
-  "Intended Audience :: Developers",
-  "Operating System :: POSIX :: Linux",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Topic :: Software Development :: Debuggers",
-]
+dependencies = []
 
-[project.scripts]
-pydump = "pydump.cli:main"
-pyheap_dump = "pydump.cli:main"
-pydump_analyzer = "pydump_analysis.cli:main"
+[tool.uv]
+package = false
 
-[project.optional-dependencies]
+[tool.uv.workspace]
+members = ["capture/collector", "analyzer/python"]
+
+[dependency-groups]
 dev = [
   "mypy>=1.14",
   "pytest>=8.3",
   "ruff>=0.9",
 ]
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/pydump", "src/pydump_analysis"]
-
-[tool.hatch.build.targets.sdist]
-include = ["src", "tests", "native", "benchmarks", "README.md", "LICENSE", "NOTICE", "Makefile"]
 
 [tool.ruff]
 line-length = 100
@@ -48,8 +27,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-packages = ["pydump", "pydump_analysis"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-testpaths = ["tests"]
+testpaths = ["capture/collector/tests", "analyzer/python/tests"]

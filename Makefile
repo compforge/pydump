@@ -1,36 +1,50 @@
-.PHONY: benchmark-native benchmark-transport benchmark-writer build-agent fix lint test test-compat test-native
+.PHONY: benchmark-native benchmark-transport benchmark-writer build-agent build-go build-python fix lint test test-compat test-native
 
 PYTHON ?= python3
+PYHEAP_UI_SRC ?= ../fork-pyheap/pyheap-ui/src
 
 fix:
-	uv run --extra dev ruff format .
-	uv run --extra dev ruff check --fix .
+	uv run --all-packages ruff format .
+	uv run --all-packages ruff check --fix .
+	cd analyzer/go && gofmt -w .
 
 lint:
-	uv run --extra dev ruff format --check .
-	uv run --extra dev ruff check .
-	uv run --extra dev mypy src
+	uv run --all-packages ruff format --check .
+	uv run --all-packages ruff check .
+	uv run --all-packages mypy capture/collector/src analyzer/python/src
+	test -z "$$(gofmt -l analyzer/go)"
+	cd analyzer/go && go vet ./...
 
 test:
-	uv run --extra dev pytest
+	uv run --all-packages pytest
+	cd analyzer/go && go test ./...
 
 test-compat:
-	PYTHONPATH=src:../fork-pyheap/pyheap-ui/src uv run --extra dev pytest \
-		tests/test_heap_writer.py::test_upstream_pyheap_reader_accepts_artifact
+	PYTHONPATH=capture/collector/src:$(PYHEAP_UI_SRC) uv run --all-packages pytest \
+		capture/collector/tests/test_heap_writer.py::test_upstream_pyheap_reader_accepts_artifact
 
 test-native: build-agent
-	PYDUMP_NATIVE_AGENT=$$(find native/build -name 'pydump-agent-*.so' -print -quit) \
-		PYTHONPATH=src $(PYTHON) -m pytest tests/test_native_agent.py
+	PYDUMP_NATIVE_AGENT=$$(find capture/agent/build -name 'pydump-agent-*.so' -print -quit) \
+		PYTHONPATH=capture/collector/src uv run --all-packages pytest capture/collector/tests/test_native_agent.py
 
 benchmark-transport:
-	uv run --extra dev python benchmarks/benchmark_transport.py
+	uv run --all-packages python capture/collector/benchmarks/benchmark_transport.py
 
 benchmark-writer:
-	uv run --extra dev python benchmarks/benchmark_writer.py
+	uv run --all-packages python capture/collector/benchmarks/benchmark_writer.py
 
 benchmark-native: build-agent
-	PYTHONPATH=src $(PYTHON) benchmarks/benchmark_native_capture.py \
-		--agent $$(find native/build -name 'pydump-agent-*.so' -print -quit)
+	PYTHONPATH=capture/collector/src $(PYTHON) capture/collector/benchmarks/benchmark_native_capture.py \
+		--agent $$(find capture/agent/build -name 'pydump-agent-*.so' -print -quit)
 
 build-agent:
-	$(MAKE) -C native PYTHON=$(PYTHON)
+	$(MAKE) -C capture/agent PYTHON=$(PYTHON)
+
+build-python:
+	uv build --package pydump --out-dir dist/capture
+	uv build --package pydump-analyzer --out-dir dist/analyzer-python
+
+build-go:
+	mkdir -p dist/analyzer-go
+	cd analyzer/go && go build -o ../../dist/analyzer-go/pydump_analyzer ./cmd/pydump-analyzer
+	cp LICENSE NOTICE dist/analyzer-go/
