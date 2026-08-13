@@ -56,3 +56,12 @@ make test
 make test-native
 make test-compat  # when fork-pyheap is available beside this checkout
 ```
+
+Performance investigations use isolated transport and artifact-sink benchmarks so measurement does
+not change live-capture behavior:
+
+```bash
+make benchmark-transport
+make benchmark-writer
+make benchmark-native  # Linux only; streams a synthetic target through the native Agent
+```

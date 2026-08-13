@@ -37,11 +37,21 @@ typedef struct {
     uint8_t nonce[PYDUMP_NONCE_SIZE];
 } session_args;
 
+/* Object and root records are aggregated before send so syscall count scales
+   with wire bytes, not object count. The fixed buffer preserves the Agent's
+   heap-independent memory bound. */
+typedef struct {
+    int fd;
+    uint8_t wire[12 + PYDUMP_BULK_PAYLOAD_SIZE];
+    size_t payload_length;
+} record_batch;
+
 typedef struct {
     int fd;
     uint64_t values[PYDUMP_IO_BATCH];
     size_t count;
     enum pydump_frame_kind kind;
+    record_batch *batch;
 } address_stream;
 
 static atomic_flag session_active = ATOMIC_FLAG_INIT;
@@ -110,6 +120,104 @@ send_frame(int fd, enum pydump_frame_kind kind, const void *payload, uint32_t le
     return length == 0 ? 0 : send_all(fd, payload, length);
 }
 
+static void
+write_frame_header(uint8_t header[12], enum pydump_frame_kind kind, uint32_t length)
+{
+    uint16_t flags = 0;
+    uint32_t network_length = htonl(length);
+    memcpy(header, "PYDP", 4);
+    header[4] = PYDUMP_PROTOCOL_VERSION;
+    header[5] = (uint8_t)kind;
+    memcpy(header + 6, &flags, sizeof(flags));
+    memcpy(header + 8, &network_length, sizeof(network_length));
+}
+
+static int
+flush_record_batch(record_batch *batch)
+{
+    if (batch->payload_length == 0) {
+        return 0;
+    }
+    write_frame_header(
+        batch->wire,
+        PYDUMP_BULK_BATCH,
+        (uint32_t)batch->payload_length
+    );
+    int result = send_all(batch->fd, batch->wire, 12 + batch->payload_length);
+    batch->payload_length = 0;
+    return result;
+}
+
+static int
+append_record_parts(
+    record_batch *batch,
+    enum pydump_frame_kind kind,
+    const void *first,
+    uint32_t first_length,
+    const void *second,
+    uint32_t second_length
+)
+{
+    uint32_t payload_length = first_length + second_length;
+    size_t record_length = PYDUMP_RECORD_HEADER_SIZE + (size_t)payload_length;
+    if (record_length > PYDUMP_BULK_PAYLOAD_SIZE) {
+        /* A pathological type name can exceed the normal batch. Keep that
+           exceptional allocation bounded by the protocol payload limit. */
+        if (flush_record_batch(batch) < 0) {
+            return -1;
+        }
+        size_t wire_length = 12 + record_length;
+        uint8_t *wire = malloc(wire_length);
+        if (wire == NULL) {
+            return -1;
+        }
+        write_frame_header(wire, PYDUMP_BULK_BATCH, (uint32_t)record_length);
+        wire[12] = (uint8_t)kind;
+        uint32_t network_length = htonl(payload_length);
+        memcpy(wire + 13, &network_length, sizeof(network_length));
+        if (first_length > 0) {
+            memcpy(wire + 17, first, first_length);
+        }
+        if (second_length > 0) {
+            memcpy(wire + 17 + first_length, second, second_length);
+        }
+        int result = send_all(batch->fd, wire, wire_length);
+        free(wire);
+        return result;
+    }
+    if (batch->payload_length + record_length > PYDUMP_BULK_PAYLOAD_SIZE
+        && flush_record_batch(batch) < 0) {
+        return -1;
+    }
+    uint8_t *cursor = batch->wire + 12 + batch->payload_length;
+    cursor[0] = (uint8_t)kind;
+    uint32_t network_length = htonl(payload_length);
+    memcpy(cursor + 1, &network_length, sizeof(network_length));
+    if (first_length > 0) {
+        memcpy(cursor + PYDUMP_RECORD_HEADER_SIZE, first, first_length);
+    }
+    if (second_length > 0) {
+        memcpy(
+            cursor + PYDUMP_RECORD_HEADER_SIZE + first_length,
+            second,
+            second_length
+        );
+    }
+    batch->payload_length += record_length;
+    return 0;
+}
+
+static int
+append_record(
+    record_batch *batch,
+    enum pydump_frame_kind kind,
+    const void *payload,
+    uint32_t length
+)
+{
+    return append_record_parts(batch, kind, payload, length, NULL, 0);
+}
+
 static int
 receive_frame(int fd, enum pydump_frame_kind *kind, uint8_t *payload, uint32_t *length)
 {
@@ -150,12 +258,10 @@ flush_addresses(address_stream *stream)
     for (size_t index = 0; index < stream->count; index++) {
         payload[index] = host_to_be64(stream->values[index]);
     }
-    int result = send_frame(
-        stream->fd,
-        stream->kind,
-        payload,
-        (uint32_t)(stream->count * sizeof(uint64_t))
-    );
+    uint32_t length = (uint32_t)(stream->count * sizeof(uint64_t));
+    int result = stream->batch == NULL
+                     ? send_frame(stream->fd, stream->kind, payload, length)
+                     : append_record(stream->batch, stream->kind, payload, length);
     stream->count = 0;
     return result;
 }
@@ -227,7 +333,13 @@ send_well_known(int fd)
 static int
 send_roots(int fd)
 {
-    address_stream stream = {.fd = fd, .count = 0, .kind = PYDUMP_ROOT_BATCH};
+    record_batch batch = {.fd = fd, .payload_length = 0};
+    address_stream stream = {
+        .fd = fd,
+        .count = 0,
+        .kind = PYDUMP_ROOT_BATCH,
+        .batch = &batch,
+    };
 #if PY_VERSION_HEX >= 0x030C0000
     PyUnstable_GC_VisitObjects(visit_root, &stream);
 #else
@@ -254,7 +366,7 @@ send_roots(int fd)
         }
     }
 #endif
-    if (flush_addresses(&stream) < 0) {
+    if (flush_addresses(&stream) < 0 || flush_record_batch(&batch) < 0) {
         return -1;
     }
     return send_frame(fd, PYDUMP_ROOTS_DONE, NULL, 0);
@@ -279,17 +391,14 @@ content_kind(PyObject *object)
 }
 
 static int
-send_object_begin(int fd, PyObject *object, enum pydump_content_kind kind)
+send_object_begin(record_batch *batch, PyObject *object, enum pydump_content_kind kind)
 {
     const char *type_name = pydump_type_name(object);
     size_t name_length = strlen(type_name);
     if (name_length > UINT16_MAX) {
         name_length = UINT16_MAX;
     }
-    uint8_t *payload = malloc(23 + name_length);
-    if (payload == NULL) {
-        return -1;
-    }
+    uint8_t payload[23];
     uint64_t address = host_to_be64((uint64_t)(uintptr_t)object);
     uint64_t type_address = host_to_be64((uint64_t)(uintptr_t)Py_TYPE(object));
     uint32_t size = htonl(pydump_shallow_size(object));
@@ -299,16 +408,30 @@ send_object_begin(int fd, PyObject *object, enum pydump_content_kind kind)
     memcpy(payload + 16, &size, sizeof(size));
     payload[20] = (uint8_t)kind;
     memcpy(payload + 21, &network_name_length, sizeof(network_name_length));
-    memcpy(payload + 23, type_name, name_length);
-    int result = send_frame(fd, PYDUMP_OBJECT_BEGIN, payload, (uint32_t)(23 + name_length));
-    free(payload);
-    return result;
+    return append_record_parts(
+        batch,
+        PYDUMP_OBJECT_BEGIN,
+        payload,
+        sizeof(payload),
+        type_name,
+        (uint32_t)name_length
+    );
 }
 
 static int
-send_sequence_content(int fd, PyObject *object, enum pydump_content_kind kind)
+send_sequence_content(
+    record_batch *batch,
+    int fd,
+    PyObject *object,
+    enum pydump_content_kind kind
+)
 {
-    address_stream stream = {.fd = fd, .count = 0, .kind = PYDUMP_SEQUENCE_CONTENT};
+    address_stream stream = {
+        .fd = fd,
+        .count = 0,
+        .kind = PYDUMP_SEQUENCE_CONTENT,
+        .batch = batch,
+    };
     if (kind == PYDUMP_CONTENT_LIST) {
         Py_ssize_t length = PyList_GET_SIZE(object);
         for (Py_ssize_t index = 0; index < length; index++) {
@@ -336,9 +459,14 @@ send_sequence_content(int fd, PyObject *object, enum pydump_content_kind kind)
 }
 
 static int
-send_dict_content(int fd, PyObject *object)
+send_dict_content(record_batch *batch, int fd, PyObject *object)
 {
-    address_stream stream = {.fd = fd, .count = 0, .kind = PYDUMP_DICT_CONTENT};
+    address_stream stream = {
+        .fd = fd,
+        .count = 0,
+        .kind = PYDUMP_DICT_CONTENT,
+        .batch = batch,
+    };
     Py_ssize_t position = 0;
     PyObject *key;
     PyObject *value;
@@ -351,9 +479,14 @@ send_dict_content(int fd, PyObject *object)
 }
 
 static int
-send_referents(int fd, PyObject *object)
+send_referents(record_batch *batch, int fd, PyObject *object)
 {
-    address_stream stream = {.fd = fd, .count = 0, .kind = PYDUMP_REFERENTS};
+    address_stream stream = {
+        .fd = fd,
+        .count = 0,
+        .kind = PYDUMP_REFERENTS,
+        .batch = batch,
+    };
     traverseproc traverse = Py_TYPE(object)->tp_traverse;
     if (traverse != NULL && PyObject_IS_GC(object)
         && traverse(object, visit_referent, &stream) != 0) {
@@ -363,29 +496,30 @@ send_referents(int fd, PyObject *object)
 }
 
 static int
-send_object(int fd, PyObject *object)
+send_object(record_batch *batch, int fd, PyObject *object)
 {
     enum pydump_content_kind kind = content_kind(object);
-    if (send_object_begin(fd, object, kind) < 0) {
+    if (send_object_begin(batch, object, kind) < 0) {
         return -1;
     }
-    if (kind == PYDUMP_CONTENT_DICT && send_dict_content(fd, object) < 0) {
+    if (kind == PYDUMP_CONTENT_DICT && send_dict_content(batch, fd, object) < 0) {
         return -1;
     }
     if ((kind == PYDUMP_CONTENT_LIST || kind == PYDUMP_CONTENT_SET
          || kind == PYDUMP_CONTENT_TUPLE)
-        && send_sequence_content(fd, object, kind) < 0) {
+        && send_sequence_content(batch, fd, object, kind) < 0) {
         return -1;
     }
-    if (send_referents(fd, object) < 0) {
+    if (send_referents(batch, fd, object) < 0) {
         return -1;
     }
-    return send_frame(fd, PYDUMP_OBJECT_END, NULL, 0);
+    return append_record(batch, PYDUMP_OBJECT_END, NULL, 0);
 }
 
 static int
 handle_requests(int fd, uint8_t *payload)
 {
+    record_batch batch = {.fd = fd, .payload_length = 0};
     while (1) {
         enum pydump_frame_kind kind;
         uint32_t length;
@@ -403,11 +537,12 @@ handle_requests(int fd, uint8_t *payload)
             uint64_t network_address;
             memcpy(&network_address, payload + offset, sizeof(network_address));
             uint64_t address = host_to_be64(network_address);
-            if (send_object(fd, (PyObject *)(uintptr_t)address) < 0) {
+            if (send_object(&batch, fd, (PyObject *)(uintptr_t)address) < 0) {
                 return -1;
             }
         }
-        if (send_frame(fd, PYDUMP_BATCH_DONE, NULL, 0) < 0) {
+        if (flush_record_batch(&batch) < 0
+            || send_frame(fd, PYDUMP_BATCH_DONE, NULL, 0) < 0) {
             return -1;
         }
     }

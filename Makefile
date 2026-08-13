@@ -1,4 +1,4 @@
-.PHONY: build-agent fix lint test test-compat test-native
+.PHONY: benchmark-native benchmark-transport benchmark-writer build-agent fix lint test test-compat test-native
 
 PYTHON ?= python3
 
@@ -21,6 +21,16 @@ test-compat:
 test-native: build-agent
 	PYDUMP_NATIVE_AGENT=$$(find native/build -name 'pydump-agent-*.so' -print -quit) \
 		PYTHONPATH=src $(PYTHON) -m pytest tests/test_native_agent.py
+
+benchmark-transport:
+	uv run --extra dev python benchmarks/benchmark_transport.py
+
+benchmark-writer:
+	uv run --extra dev python benchmarks/benchmark_writer.py
+
+benchmark-native: build-agent
+	PYTHONPATH=src $(PYTHON) benchmarks/benchmark_native_capture.py \
+		--agent $$(find native/build -name 'pydump-agent-*.so' -print -quit)
 
 build-agent:
 	$(MAKE) -C native PYTHON=$(PYTHON)
