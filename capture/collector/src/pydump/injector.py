@@ -10,6 +10,8 @@ from pathlib import Path
 from pydump.errors import PydumpError
 from pydump.target import Target
 
+_AGENT_STARTED_MARKER = "PYDUMP_AGENT_STARTED=0"
+
 
 def install_agent(target: Target, source: Path) -> tuple[Path, str]:
     """Copy a stable agent path into target `/tmp` and return host/target views."""
@@ -60,10 +62,13 @@ def inject(
             "(int (*)(void *))PyCallable_Check, (void *)0)"
         ),
         "-ex",
-        (
-            'if $pydump_pending != 0\nprintf "PYDUMP_PENDING_CALL_FAILED: %d\\n", '
-            "$pydump_pending\nquit 80\nend"
-        ),
+        "if $pydump_pending != 0",
+        "-ex",
+        'printf "PYDUMP_PENDING_CALL_FAILED: %d\\n", $pydump_pending',
+        "-ex",
+        "quit 80",
+        "-ex",
+        "end",
         "-ex",
         "continue",
         "-ex",
@@ -71,24 +76,38 @@ def inject(
         "-ex",
         f'set $pydump_agent=(void*)dlopen("{_gdb_string(agent_target_path)}", 2)',
         "-ex",
-        (
-            'if $pydump_agent == 0\nprintf "PYDUMP_DLOPEN_FAILED: %s\\n", '
-            "(char*)dlerror()\nquit 81\nend"
-        ),
+        "if $pydump_agent == 0",
+        "-ex",
+        'printf "PYDUMP_DLOPEN_FAILED: %s\\n", (char*)dlerror()',
+        "-ex",
+        "quit 81",
+        "-ex",
+        "end",
         "-ex",
         'set $pydump_start=(void*)dlsym($pydump_agent, "pydump_start")',
         "-ex",
-        (
-            'if $pydump_start == 0\nprintf "PYDUMP_DLSYM_FAILED: %s\\n", '
-            "(char*)dlerror()\nquit 82\nend"
-        ),
+        "if $pydump_start == 0",
+        "-ex",
+        'printf "PYDUMP_DLSYM_FAILED: %s\\n", (char*)dlerror()',
+        "-ex",
+        "quit 82",
+        "-ex",
+        "end",
         "-ex",
         (
             "set $pydump_rc=(int)((int (*)(char*, char*))$pydump_start)"
             f'("{_gdb_string(socket_target_path)}", "{nonce.hex()}")'
         ),
         "-ex",
-        ('if $pydump_rc != 0\nprintf "PYDUMP_START_FAILED: %d\\n", $pydump_rc\nquit 83\nend'),
+        'printf "PYDUMP_AGENT_STARTED=%d\\n", $pydump_rc',
+        "-ex",
+        "if $pydump_rc != 0",
+        "-ex",
+        'printf "PYDUMP_START_FAILED: %d\\n", $pydump_rc',
+        "-ex",
+        "quit 83",
+        "-ex",
+        "end",
         "-ex",
         "detach",
         "-ex",
@@ -111,10 +130,31 @@ def inject(
         ) from error
     if process.returncode:
         rendered = shlex.join(command[:7] + ["..."])
+        detail = _gdb_failure_detail(process.stdout)
         raise PydumpError(
-            f"GDB failed for PID {target.host_pid} with code {process.returncode} "
-            f"({rendered}):\n{process.stdout.strip()}"
+            f"GDB failed for PID {target.host_pid} with code {process.returncode}: {detail}"
+            f"\nCommand: {rendered}\n\nGDB output:\n{process.stdout.strip()}"
         )
+    if _AGENT_STARTED_MARKER not in {line.strip() for line in process.stdout.splitlines()}:
+        output = process.stdout.strip()
+        detail = _gdb_failure_detail(output, fallback="GDB returned no Agent start marker")
+        raise PydumpError(
+            f"GDB did not confirm Agent start for PID {target.host_pid}: {detail}"
+            + (f"\n\nGDB output:\n{output}" if output else "")
+        )
+
+
+def _gdb_failure_detail(output: str, *, fallback: str = "GDB returned no diagnostic") -> str:
+    return next(
+        (
+            line.strip()
+            for line in output.splitlines()
+            if "extended state status" in line
+            or "gdb.error:" in line
+            or ("PYDUMP_" in line and "FAILED" in line)
+        ),
+        fallback,
+    )
 
 
 def _gdb_string(value: str) -> str:
