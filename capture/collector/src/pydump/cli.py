@@ -120,7 +120,8 @@ def run(arguments: argparse.Namespace) -> Path:
                 stats = collector.stats
             thread.join(arguments.timeout)
             if injection_error:
-                path.unlink(missing_ok=True)
+                # Collector has already validated and atomically published this artifact.
+                # Injector teardown failures must not delete a successfully delivered result.
                 raise injection_error[0]
             print()
             print(f"Heap file saved: {path} ({count} objects, {time.monotonic() - started:.2f}s)")
