@@ -17,14 +17,16 @@
 # and progress-bar dependencies while preserving its graph semantics.
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydump_analysis.model import Address, Heap
+from pydump_analyzer.model import Address, Heap
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,16 +197,31 @@ class RetainedHeapCache:
         try:
             with self.path.open(encoding="utf-8") as file:
                 value = json.load(file)
-        except FileNotFoundError:
+            if not isinstance(value, dict):
+                return None
+            return RetainedHeap.load(value)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return None
-        if not isinstance(value, dict):
-            raise ValueError(f"invalid retained heap cache: {self.path}")
-        return RetainedHeap.load(value)
 
     def store(self, retained: RetainedHeap) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as file:
-            json.dump(retained.dump(), file)
+        path = self.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as file:
+                temporary_path = Path(file.name)
+                json.dump(retained.dump(), file)
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     @property
     def path(self) -> Path:
@@ -228,7 +245,10 @@ def retained_heap_with_cache(heap_file: Path, heap: Heap) -> RetainedHeap:
     if retained is not None:
         return retained
     retained = RetainedHeapCalculator(heap, InboundReferences(heap)).calculate()
-    cache.store(retained)
+    # The cache is derived data. Returning the analysis result is more important
+    # than persisting this optional optimization.
+    with contextlib.suppress(OSError):
+        cache.store(retained)
     return retained
 
 

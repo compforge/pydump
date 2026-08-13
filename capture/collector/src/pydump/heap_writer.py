@@ -47,14 +47,16 @@ class HeapWriter:
         self._object_count_offset: int | None = None
         self._object_count = 0
 
-    def write_header(self, well_known_types: dict[str, int]) -> None:
+    def write_header(
+        self, well_known_types: dict[str, int], *, created_at: str | None = None
+    ) -> None:
         missing = set(WELL_KNOWN_TYPE_NAMES) - well_known_types.keys()
         if missing:
             raise PydumpError(f"agent omitted well-known types: {', '.join(sorted(missing))}")
 
         self._write_u64(MAGIC)
         self._write_u32(FORMAT_VERSION)
-        self._write_long_string(datetime.now().astimezone().isoformat())
+        self._write_long_string(created_at or datetime.now().astimezone().isoformat())
         self._write_u64(FLAG_WITH_STR_REPR if self._with_str_repr else 0)
         self._write_u32(len(WELL_KNOWN_TYPE_NAMES))
         for name in WELL_KNOWN_TYPE_NAMES:

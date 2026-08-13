@@ -113,6 +113,10 @@ class Heap:
                 f"{self._string_representation(value, nested_seen)}"
                 for key, value in obj.content.items()
             )
+        elif isinstance(obj.content, set):
+            inner = ", ".join(
+                self._string_representation(item, nested_seen) for item in sorted(obj.content)
+            )
         elif obj.content is not None:
             inner = ", ".join(
                 self._string_representation(item, nested_seen) for item in obj.content

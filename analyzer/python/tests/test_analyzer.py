@@ -4,11 +4,12 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from pydump.heap_writer import WELL_KNOWN_TYPE_NAMES, HeapWriter
 from pydump.model import ContentKind
 from pydump.model import HeapObject as CapturedObject
-from pydump_analysis.cli import main
-from pydump_analysis.model import (
+from pydump_analyzer.cli import build_parser, main
+from pydump_analyzer.model import (
     Heap,
     HeapFlags,
     HeapHeader,
@@ -16,9 +17,14 @@ from pydump_analysis.model import (
     HeapThread,
     HeapThreadFrame,
 )
-from pydump_analysis.reader import load_heap
-from pydump_analysis.report import ANALYSIS_SCHEMA, build_heap_analysis
-from pydump_analysis.retained import InboundReferences, RetainedHeapCalculator
+from pydump_analyzer.reader import load_heap
+from pydump_analyzer.report import ANALYSIS_SCHEMA, build_heap_analysis
+from pydump_analyzer.retained import (
+    InboundReferences,
+    RetainedHeapCache,
+    RetainedHeapCalculator,
+    retained_heap_with_cache,
+)
 
 
 def _well_known_types() -> dict[str, int]:
@@ -104,13 +110,30 @@ def test_reader_loads_pydump_artifact_and_lazy_string_representations(tmp_path: 
         heap.close()
 
 
+def test_string_representation_orders_set_content_by_address() -> None:
+    known = _well_known_types()
+    heap = Heap(
+        header=HeapHeader(1, "", HeapFlags(True), known),
+        threads=[],
+        objects={
+            1: HeapObject(1, known["set"], 16, {2, 3}, {3, 2}),
+            2: HeapObject(2, known["object"], 16, set(), string_representation_offset=0),
+            3: HeapObject(3, known["object"], 16, set(), string_representation_offset=3),
+        },
+        types={known["set"]: "set", known["object"]: "object"},
+        _source=b"\x00\x01a\x00\x01b",
+    )
+
+    assert heap.string_representation(heap.objects[1]) == "{a, b}"
+
+
 def test_summary_matches_stable_pyheap_analysis_contract(tmp_path: Path) -> None:
     heap_file = tmp_path / "heap.pyheap"
     heap_file.write_bytes(b"heap contents")
 
     result = build_heap_analysis(heap_file=heap_file, heap=_analysis_heap(), top_n=5)
 
-    assert result["schema"] == ANALYSIS_SCHEMA
+    assert result["schema"] == "pydump.analysis/v1"
     assert result["source"] == {
         "sha256": hashlib.sha256(b"heap contents").hexdigest(),
         "size_bytes": 13,
@@ -215,6 +238,43 @@ def test_retained_heap_treats_other_threads_as_roots() -> None:
     assert retained.threads == {"one": 0, "two": 0}
 
 
+def test_retained_heap_cache_replaces_corrupt_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heap_file = tmp_path / "heap.pyheap"
+    heap_file.write_bytes(b"heap contents")
+    cache_directory = tmp_path / "cache"
+    monkeypatch.setenv("PYHEAP_CACHE_DIR", str(cache_directory))
+    cache = RetainedHeapCache(heap_file, cache_directory)
+    cache_directory.mkdir()
+    cache.path.write_text("{", encoding="utf-8")
+
+    heap = _analysis_heap()
+    heap.threads.clear()
+    retained = retained_heap_with_cache(heap_file, heap)
+
+    assert retained.objects == {0x100: 180, 0x101: 100, 0x102: 40}
+    with cache.path.open(encoding="utf-8") as file:
+        assert len(json.load(file)["objects"]) == 3
+    assert list(cache.path.parent.glob(".*.tmp")) == []
+
+
+def test_retained_heap_cache_write_failure_does_not_hide_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heap_file = tmp_path / "heap.pyheap"
+    heap_file.write_bytes(b"heap contents")
+    blocked_directory = tmp_path / "not-a-directory"
+    blocked_directory.write_text("block", encoding="utf-8")
+    monkeypatch.setenv("PYHEAP_CACHE_DIR", str(blocked_directory))
+
+    heap = _analysis_heap()
+    heap.threads.clear()
+    retained = retained_heap_with_cache(heap_file, heap)
+
+    assert retained.objects == {0x100: 180, 0x101: 100, 0x102: 40}
+
+
 def test_cli_summary_writes_only_json(tmp_path: Path, capsys) -> None:
     heap_file = tmp_path / "heap.pyheap"
     _write_heap(heap_file, with_str_repr=False)
@@ -224,3 +284,29 @@ def test_cli_summary_writes_only_json(tmp_path: Path, capsys) -> None:
     result = json.loads(capsys.readouterr().out)
     assert result["schema"] == ANALYSIS_SCHEMA
     assert result["heap"]["object_count"] == 2
+
+
+def test_cli_rejects_negative_top_n() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["retained-heap", "--file", "heap.pyheap", "--top-n", "-1"])
+
+
+def test_shared_contract_fixture_matches_python_reference() -> None:
+    root = Path(__file__).parents[3]
+    heap_file = root / "contracts/testdata/heap-v1.pyheap"
+    expected = json.loads(
+        (root / "contracts/testdata/analysis-v1.expected.json").read_text(encoding="utf-8")
+    )
+    heap = load_heap(heap_file)
+    try:
+        retained = RetainedHeapCalculator(heap, InboundReferences(heap)).calculate()
+        actual = build_heap_analysis(
+            heap_file=heap_file,
+            heap=heap,
+            retained=retained,
+            top_n=8,
+        )
+    finally:
+        heap.close()
+
+    assert actual == expected

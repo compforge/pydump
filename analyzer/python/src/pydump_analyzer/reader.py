@@ -22,7 +22,7 @@ import struct
 from pathlib import Path
 from typing import cast
 
-from pydump_analysis.model import (
+from pydump_analyzer.model import (
     Address,
     Heap,
     HeapFlags,
@@ -70,6 +70,13 @@ class HeapReader:
         common_types = self._read_common_types(frequent_attributes)
         objects = self._read_objects(header, frequent_attributes, common_types)
         types = self._read_address_string_map()
+
+        for obj in objects.values():
+            if obj.type_address not in types:
+                raise HeapFormatError(
+                    f"PyHeap type table is missing address 0x{obj.type_address:x} "
+                    f"for object 0x{obj.address:x}"
+                )
 
         if self._read_u64() != MAGIC:
             raise HeapFormatError("invalid PyHeap footer magic value")
@@ -133,6 +140,8 @@ class HeapReader:
             if header.flags.with_str_repr and type_address not in container_types:
                 string_offset = self._offset
                 self._skip_long_string()
+            if address in result:
+                raise HeapFormatError(f"duplicate object address 0x{address:x}")
             result[address] = HeapObject(
                 address,
                 type_address,

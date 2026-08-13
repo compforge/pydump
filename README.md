@@ -4,8 +4,8 @@ Pydump captures the live object graph of a CPython process while keeping heap-si
 the target process. A small C agent streams object facts; the Python Collector owns the work queue,
 visited-address set, and output file.
 
-The generated artifact uses PyHeap's `.pyheap` v1 format. Pydump includes a standalone, headless
-analyzer, and existing PyHeap UI and Doctor analysis can also read it.
+The generated artifact uses PyHeap's `.pyheap` v1 format. Independent Python and Go analyzers read
+that artifact and emit the language-neutral `pydump.analysis/v1` JSON protocol.
 
 Pydump is inspired by [PyHeap](https://github.com/ivanyu/pyheap), whose GDB-based heap dumper,
 artifact format, and analysis workflow established the foundation for this project.
@@ -24,18 +24,19 @@ production use until Linux GDB attach, timeout recovery, target-memory budgets, 
 ## Build
 
 ```bash
-uv sync --extra dev
+uv sync --all-packages
 make build-agent
+make build-go
 ```
 
-The agent is written to `native/build/pydump-agent-<python-minor>-<arch>.so`. Build it with the same
-CPython minor used by the target process.
+The agent is written to `capture/agent/build/pydump-agent-<python-minor>-<arch>.so`. Build it with
+the same CPython minor used by the target process.
 
 ## Capture
 
 ```bash
-uv run pyheap_dump --pid 1234 --file process.pyheap \
-  --agent native/build/pydump-agent-3.12-x86_64.so
+uv run --package pydump pyheap_dump --pid 1234 --file process.pyheap \
+  --agent capture/agent/build/pydump-agent-3.12-x86_64.so
 ```
 
 The familiar PyHeap flags remain available: `--str-repr-len`, `--no-attribute`,
@@ -45,23 +46,26 @@ safe type/address preview and leaves attributes and thread frames empty; explana
 therefore less detailed than PyHeap while the object graph remains the primary compatibility
 contract.
 
-See [the design](docs/design.md) for the memory ownership and safety model.
+See [the kernel](docs/kernel.md) for the memory ownership and safety model.
 
 ## Analyze
 
 ```bash
-uv run pydump_analyzer summary --file process.pyheap
-uv run pydump_analyzer retained-heap --file process.pyheap --format json --top-n 100
+uv run --package pydump-analyzer pydump_analyzer summary --file process.pyheap
+uv run --package pydump-analyzer pydump_analyzer retained-heap \
+  --file process.pyheap --format json --top-n 100
 ```
 
-`summary` reads the artifact and emits `pyheap.analysis/v1` JSON without calculating retained
+`summary` reads the artifact and emits `pydump.analysis/v1` JSON without calculating retained
 sizes. `retained-heap` additionally builds the inbound-reference index and retained-size data; this
 is an O(N) offline workload and can use substantial memory on a large heap. Both commands run in
 the analyzer process after capture and do not allocate analysis state in the target process or its
 container.
 
-The analyzer is an independent `pydump_analysis` package. It keeps PyHeap v1 and the stable JSON
-protocol as compatibility boundaries, but does not include or depend on PyHeap's Flask UI.
+Analyzer implementations live under [`analyzer/<language>`](analyzer/). Python ships as the
+independent `pydump-analyzer` package; Go builds a standalone `pydump_analyzer` binary. Both use
+[`contracts`](contracts/) and the same golden corpus rather than depending on each other. Neither
+includes or depends on PyHeap's Flask UI.
 
 ## Verify
 

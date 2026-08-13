@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from pydump.collector import Collector
 from pydump.model import HeapObject
 from pydump.protocol import (

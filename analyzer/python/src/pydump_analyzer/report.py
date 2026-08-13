@@ -21,14 +21,14 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from pydump_analysis.model import Address, Heap, HeapObject, HeapThread
-from pydump_analysis.retained import (
+from pydump_analyzer.model import Address, Heap, HeapObject, HeapThread
+from pydump_analyzer.retained import (
     RetainedHeap,
     objects_sorted_by_retained_heap,
     total_heap_size,
 )
 
-ANALYSIS_SCHEMA = "pyheap.analysis/v1"
+ANALYSIS_SCHEMA = "pydump.analysis/v1"
 
 
 def _address(value: Address) -> str:

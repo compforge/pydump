@@ -3,7 +3,6 @@ from __future__ import annotations
 import socket
 
 import pytest
-
 from pydump.errors import ProtocolError
 from pydump.protocol import (
     Frame,

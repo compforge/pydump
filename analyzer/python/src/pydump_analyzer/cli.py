@@ -24,10 +24,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydump_analysis.model import Heap
-from pydump_analysis.reader import load_heap
-from pydump_analysis.report import build_heap_analysis
-from pydump_analysis.retained import (
+from pydump_analyzer.model import Heap
+from pydump_analyzer.reader import load_heap
+from pydump_analyzer.report import build_heap_analysis
+from pydump_analyzer.retained import (
     RetainedHeap,
     objects_sorted_by_retained_heap,
     retained_heap_with_cache,
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     retained = subparsers.add_parser("retained-heap", help="show retained heap statistics")
     retained.add_argument("--file", "-f", type=Path, required=True, help="heap file name")
     retained.add_argument(
-        "--top-n", "-n", type=int, default=100, help="number of top objects to show"
+        "--top-n", "-n", type=_non_negative_int, default=100, help="number of top objects to show"
     )
     retained.add_argument(
         "--format",
@@ -121,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="output format (default: text)",
     )
     return parser
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
 
 
 def main(argv: Sequence[str] | None = None) -> int:

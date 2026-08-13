@@ -1,0 +1,126 @@
+{
+  "schema": "pydump.analysis/v1",
+  "source": {
+    "sha256": "6fd07af74817a21c2b16591cd27351f3520a8d086282123d38fac2cd808b7d51",
+    "size_bytes": 750,
+    "heap_format_version": 1,
+    "created_at": "2026-08-13T12:00:00+00:00",
+    "with_string_representations": true
+  },
+  "heap": {
+    "object_count": 7,
+    "type_count": 5,
+    "thread_count": 1,
+    "referent_count": 9,
+    "shallow_size_bytes": 288
+  },
+  "types": [
+    {
+      "type_address": "0x1002",
+      "type_name": "dict",
+      "object_count": 1,
+      "shallow_size_bytes": 80
+    },
+    {
+      "type_address": "0x1000",
+      "type_name": "list",
+      "object_count": 1,
+      "shallow_size_bytes": 64
+    },
+    {
+      "type_address": "0x100a",
+      "type_name": "object",
+      "object_count": 3,
+      "shallow_size_bytes": 56
+    },
+    {
+      "type_address": "0x1003",
+      "type_name": "set",
+      "object_count": 1,
+      "shallow_size_bytes": 48
+    },
+    {
+      "type_address": "0x1001",
+      "type_name": "tuple",
+      "object_count": 1,
+      "shallow_size_bytes": 40
+    }
+  ],
+  "threads": [
+    {
+      "name": "MainThread",
+      "is_alive": true,
+      "is_daemon": false,
+      "retained_size_bytes": 64,
+      "frames": [
+        {
+          "file_name": "/app/main.py",
+          "line_number": 42,
+          "function_name": "run",
+          "local_variables": [
+            {
+              "name": "payload",
+              "object_address": "0x2000",
+              "type_name": "list"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "retained_heap": {
+    "status": "complete",
+    "top_n": 8,
+    "top_objects": [
+      {
+        "object_address": "0x8000",
+        "type_name": "dict",
+        "shallow_size_bytes": 80,
+        "retained_size_bytes": 80,
+        "string_representation": "{<object at 0x3000>: <object at 0x4000>}"
+      },
+      {
+        "object_address": "0x2000",
+        "type_name": "list",
+        "shallow_size_bytes": 64,
+        "retained_size_bytes": 64,
+        "string_representation": "[<object at 0x3000>, <object at 0x4000>]"
+      },
+      {
+        "object_address": "0x6000",
+        "type_name": "set",
+        "shallow_size_bytes": 48,
+        "retained_size_bytes": 48,
+        "string_representation": "{<object at 0x3000>, <object at 0x4000>}"
+      },
+      {
+        "object_address": "0x7000",
+        "type_name": "tuple",
+        "shallow_size_bytes": 40,
+        "retained_size_bytes": 40,
+        "string_representation": "(<object at 0x3000>)"
+      },
+      {
+        "object_address": "0x4000",
+        "type_name": "object",
+        "shallow_size_bytes": 32,
+        "retained_size_bytes": 32,
+        "string_representation": "<object at 0x4000>"
+      },
+      {
+        "object_address": "0x3000",
+        "type_name": "object",
+        "shallow_size_bytes": 16,
+        "retained_size_bytes": 16,
+        "string_representation": "<object at 0x3000>"
+      },
+      {
+        "object_address": "0x5000",
+        "type_name": "object",
+        "shallow_size_bytes": 8,
+        "retained_size_bytes": 8,
+        "string_representation": "<object at 0x5000>"
+      }
+    ]
+  }
+}
