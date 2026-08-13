@@ -23,6 +23,7 @@ classifiers = [
 [project.scripts]
 pydump = "pydump.cli:main"
 pyheap_dump = "pydump.cli:main"
+pydump_analyzer = "pydump_analysis.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -32,7 +33,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydump"]
+packages = ["src/pydump", "src/pydump_analysis"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src", "tests", "native", "benchmarks", "README.md", "LICENSE", "NOTICE", "Makefile"]
@@ -47,7 +48,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-packages = ["pydump"]
+packages = ["pydump", "pydump_analysis"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
