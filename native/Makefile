@@ -17,8 +17,8 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): agent.c protocol.h | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) agent.c $(LDFLAGS) -o $@
+$(TARGET): agent.c object_facts.c object_facts.h protocol.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) agent.c object_facts.c $(LDFLAGS) -o $@
 
 $(BUILD_DIR):
 	mkdir -p $@

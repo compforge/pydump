@@ -24,6 +24,7 @@ free-threaded CPython、多独立解释器和 musl 不在支持范围。
 │   └── model.py        # Collector 内部对象、容器和线程事实模型
 ├── native/
 │   ├── agent.c         # 注入目标进程的 C Agent；只保留有界 session 状态
+│   ├── object_facts.c  # 按 CPython minor 安全读取类型名与 shallow size
 │   └── protocol.h      # C 侧协议常量，与 Python protocol.py 对应
 ├── tests/              # CLI、协议、artifact、Collector 与 native smoke 契约测试
 └── docs/design.md      # 内存归属、安全模型、采集流程与发布验证标准
