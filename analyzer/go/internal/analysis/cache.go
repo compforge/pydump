@@ -25,19 +25,16 @@ func RetainedHeapWithCache(path string, value *heap.Heap) (*RetainedHeap, error)
 		return nil, err
 	}
 	retained, err := loadRetainedCache(cachePath, value)
-	if err != nil {
-		return nil, err
-	}
-	if retained != nil {
+	if err == nil && retained != nil {
 		return retained, nil
 	}
 	retained, err = CalculateRetainedHeap(value)
 	if err != nil {
 		return nil, err
 	}
-	if err := storeRetainedCache(cachePath, value, retained); err != nil {
-		return nil, err
-	}
+	// The cache is derived data. A corrupt entry or unwritable cache directory
+	// must not discard a retained heap that was calculated successfully.
+	_ = storeRetainedCache(cachePath, value, retained)
 	return retained, nil
 }
 
@@ -103,16 +100,21 @@ func storeRetainedCache(path string, value *heap.Heap, retained *RetainedHeap) e
 	for index, object := range value.Objects {
 		document.Objects[strconv.FormatUint(object.Address, 10)] = retained.Objects[index]
 	}
-	file, err := os.Create(path)
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("create retained cache: %w", err)
+		return fmt.Errorf("create temporary retained cache: %w", err)
 	}
-	if err := json.NewEncoder(file).Encode(document); err != nil {
-		_ = file.Close()
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := json.NewEncoder(temporary).Encode(document); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("encode retained cache: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close retained cache: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace retained cache: %w", err)
 	}
 	return nil
 }

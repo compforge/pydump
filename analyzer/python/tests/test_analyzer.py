@@ -19,7 +19,12 @@ from pydump_analyzer.model import (
 )
 from pydump_analyzer.reader import load_heap
 from pydump_analyzer.report import ANALYSIS_SCHEMA, build_heap_analysis
-from pydump_analyzer.retained import InboundReferences, RetainedHeapCalculator
+from pydump_analyzer.retained import (
+    InboundReferences,
+    RetainedHeapCache,
+    RetainedHeapCalculator,
+    retained_heap_with_cache,
+)
 
 
 def _well_known_types() -> dict[str, int]:
@@ -231,6 +236,43 @@ def test_retained_heap_treats_other_threads_as_roots() -> None:
     retained = RetainedHeapCalculator(heap, InboundReferences(heap)).calculate()
 
     assert retained.threads == {"one": 0, "two": 0}
+
+
+def test_retained_heap_cache_replaces_corrupt_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heap_file = tmp_path / "heap.pyheap"
+    heap_file.write_bytes(b"heap contents")
+    cache_directory = tmp_path / "cache"
+    monkeypatch.setenv("PYHEAP_CACHE_DIR", str(cache_directory))
+    cache = RetainedHeapCache(heap_file, cache_directory)
+    cache_directory.mkdir()
+    cache.path.write_text("{", encoding="utf-8")
+
+    heap = _analysis_heap()
+    heap.threads.clear()
+    retained = retained_heap_with_cache(heap_file, heap)
+
+    assert retained.objects == {0x100: 180, 0x101: 100, 0x102: 40}
+    with cache.path.open(encoding="utf-8") as file:
+        assert len(json.load(file)["objects"]) == 3
+    assert list(cache.path.parent.glob(".*.tmp")) == []
+
+
+def test_retained_heap_cache_write_failure_does_not_hide_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heap_file = tmp_path / "heap.pyheap"
+    heap_file.write_bytes(b"heap contents")
+    blocked_directory = tmp_path / "not-a-directory"
+    blocked_directory.write_text("block", encoding="utf-8")
+    monkeypatch.setenv("PYHEAP_CACHE_DIR", str(blocked_directory))
+
+    heap = _analysis_heap()
+    heap.threads.clear()
+    retained = retained_heap_with_cache(heap_file, heap)
+
+    assert retained.objects == {0x100: 180, 0x101: 100, 0x102: 40}
 
 
 def test_cli_summary_writes_only_json(tmp_path: Path, capsys) -> None:
