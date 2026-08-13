@@ -4,8 +4,8 @@ Pydump captures the live object graph of a CPython process while keeping heap-si
 the target process. A small C agent streams object facts; the Python Collector owns the work queue,
 visited-address set, and output file.
 
-The generated artifact uses PyHeap's `.pyheap` v1 format, so existing PyHeap UI and Doctor analysis
-can read it.
+The generated artifact uses PyHeap's `.pyheap` v1 format. Pydump includes a standalone, headless
+analyzer, and existing PyHeap UI and Doctor analysis can also read it.
 
 Pydump is inspired by [PyHeap](https://github.com/ivanyu/pyheap), whose GDB-based heap dumper,
 artifact format, and analysis workflow established the foundation for this project.
@@ -46,6 +46,22 @@ therefore less detailed than PyHeap while the object graph remains the primary c
 contract.
 
 See [the design](docs/design.md) for the memory ownership and safety model.
+
+## Analyze
+
+```bash
+uv run pydump_analyzer summary --file process.pyheap
+uv run pydump_analyzer retained-heap --file process.pyheap --format json --top-n 100
+```
+
+`summary` reads the artifact and emits `pyheap.analysis/v1` JSON without calculating retained
+sizes. `retained-heap` additionally builds the inbound-reference index and retained-size data; this
+is an O(N) offline workload and can use substantial memory on a large heap. Both commands run in
+the analyzer process after capture and do not allocate analysis state in the target process or its
+container.
+
+The analyzer is an independent `pydump_analysis` package. It keeps PyHeap v1 and the stable JSON
+protocol as compatibility boundaries, but does not include or depend on PyHeap's Flask UI.
 
 ## Verify
 

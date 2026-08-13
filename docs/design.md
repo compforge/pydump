@@ -91,6 +91,18 @@ frequent attribute 与 common type 表允许为空，不能为了重现 PyHeap �
 locals、属性和字符串预览属于解释信息；某项无法安全取得时记录 warning 并使用格式允许的空值，不能
 牺牲引用图正确性或重新引入目标侧 O(N) 状态。
 
+### 离线分析不回到目标进程
+
+`pydump_analyzer` 是独立于采集链路的 headless 工具。它 mmap 已完成的 `.pyheap` 文件，在分析进程中
+构建对象模型；`retained-heap` 还会构建 inbound-reference index 和逐对象 retained-size 结果。上述结构
+都随对象数增长，因此必须由 Doctor Host、调试容器或其他有足够资源的离线环境承担，不能放回目标 Python
+进程，也不能为了补充解释信息再次 attach 目标进程。
+
+`summary` 只做 artifact 读取和聚合，`retained-heap` 才执行更昂贵的引用图计算。两者输出同一个
+`pyheap.analysis/v1` JSON 契约，使 Doctor 等消费方无需依赖分析实现；Reader 保持 PyHeap v1 兼容，
+但 Analyzer 不包含 Flask、模板和静态资源，也不依赖旧 `pyheap_ui` 包。字符串表示保留文件 offset 并按需
+读取，避免 Analyzer 在载入阶段再复制整份字符串数据。
+
 ### Full 是安全的静态元数据，不执行用户代码
 
 `--no-attribute` 与 `--str-repr-len` 参数保持不变，但 Pydump 不复刻 PyHeap 中会调用用户代码的
@@ -116,7 +128,8 @@ deadline 完成兜底恢复。
 
 ## 公开接口
 
-Pydump 发布 `pyheap_dump` 可执行文件，并支持 `python -m pydump`。兼容参数包括：
+Pydump 发布 `pyheap_dump` 可执行文件，并支持 `python -m pydump`。离线分析入口是
+`pydump_analyzer summary` 和 `pydump_analyzer retained-heap`。采集兼容参数包括：
 
 - `--pid/-p` 与 `--docker-container`；
 - `--file/-f`；

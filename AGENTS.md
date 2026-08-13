@@ -3,8 +3,8 @@
 ## 项目定位与边界
 
 Pydump 是面向存量 CPython 进程的低目标内存 heap dumper。它通过注入小型 C Agent 流式读取对象事实，
-由进程外 Python Collector 维护对象图遍历状态并生成 PyHeap v1 artifact，供现有 PyHeap UI 和 Doctor
-分析链路消费。
+由进程外 Python Collector 维护对象图遍历状态并生成 PyHeap v1 artifact；独立的 `pydump_analysis` 包在
+采集结束后离线读取 artifact，提供 headless summary 和 retained-heap 分析。
 
 项目负责 CPython attach、采集协议、对象图语义和 artifact 兼容，不负责 Collector 的容器放置、
 Kubernetes 编排或 Doctor 业务集成。当前支持边界是 Linux glibc、常规 GIL 构建的 CPython 3.10 及以上；
@@ -22,6 +22,11 @@ free-threaded CPython、多独立解释器和 musl 不在支持范围。
 │   ├── protocol.py     # Collector 与 Agent 的有界二进制协议
 │   ├── heap_writer.py  # PyHeap v1 artifact 的唯一 writer
 │   └── model.py        # Collector 内部对象、容器和线程事实模型
+├── src/pydump_analysis/
+│   ├── reader.py       # mmap 读取 PyHeap v1，不依赖采集实现
+│   ├── retained.py     # inbound-reference 索引、retained heap 与缓存
+│   ├── report.py       # pyheap.analysis/v1 稳定 JSON 契约
+│   └── cli.py          # pydump_analyzer headless 入口
 ├── native/
 │   ├── agent.c         # 注入目标进程的 C Agent；只保留有界 session 状态
 │   ├── object_facts.c  # 按 CPython minor 安全读取类型名与 shallow size
@@ -46,6 +51,8 @@ free-threaded CPython、多独立解释器和 musl 不在支持范围。
    原子改名；任何失败都应保留带 PID、阶段和原始原因的错误上下文。
 7. **发布以真实环境矩阵为准**：本地 native smoke 只验证 C/Python 协议和对象遍历。正式发布前必须通过
    Linux glibc 上 CPython 3.10–3.14 × x86_64/AArch64 的 GDB attach、超时恢复和内存预算测试。
+8. **分析与采集进程隔离**：`pydump_analysis` 只能从已交付 artifact 构建 O(N) 对象图和 inbound index，
+   不得通过 Agent 回到目标进程补数据。`pyheap.analysis/v1` 是分析消费方契约，UI 不进入该包。
 
 ## 开发与验证
 
