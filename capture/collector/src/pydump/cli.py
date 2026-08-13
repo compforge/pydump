@@ -14,6 +14,8 @@ from pydump.errors import PydumpError
 from pydump.injector import inject, install_agent
 from pydump.target import resolve_target, verify_agent
 
+_INJECTION_POLL_SECONDS = 0.1
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Dump a live CPython heap.", allow_abbrev=False)
@@ -90,14 +92,26 @@ def run(arguments: argparse.Namespace) -> Path:
 
             thread = threading.Thread(target=attach, name="pydump-gdb", daemon=True)
             thread.start()
-            try:
-                connection, _ = listener.accept()
-            except TimeoutError as error:
-                if injection_error:
-                    raise injection_error[0] from error
-                raise PydumpError(
-                    f"agent for PID {target.host_pid} did not connect within {arguments.timeout:g}s"
-                ) from error
+            deadline = attach_started + arguments.timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # inject() has the same deadline, so it is already completing here. Wait for
+                    # its specific GDB failure instead of racing it with a generic connect timeout.
+                    thread.join()
+                    if injection_error:
+                        raise injection_error[0]
+                    raise PydumpError(
+                        f"agent for PID {target.host_pid} did not connect within "
+                        f"{arguments.timeout:g}s"
+                    )
+                listener.settimeout(min(_INJECTION_POLL_SECONDS, remaining))
+                try:
+                    connection, _ = listener.accept()
+                    break
+                except TimeoutError as error:
+                    if injection_error:
+                        raise injection_error[0] from error
             with connection:
                 connection.settimeout(arguments.timeout)
                 started = time.monotonic()

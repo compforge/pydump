@@ -104,3 +104,67 @@ def test_injector_teardown_failure_preserves_delivered_artifact(
         cli.run(arguments)
 
     assert output.read_bytes() == b"complete artifact"
+
+
+def test_agent_connect_timeout_prefers_completed_injector_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_root = tmp_path / "target-root"
+    (target_root / "tmp").mkdir(parents=True)
+    output = tmp_path / "heap.pyheap"
+    agent = tmp_path / "agent.so"
+    agent.write_bytes(b"agent")
+    target = SimpleNamespace(
+        root=target_root,
+        fs_owner=(os.getuid(), os.getgid()),
+        python_minor=(3, 11),
+        host_pid=42,
+    )
+
+    class FakeListener:
+        def __enter__(self) -> FakeListener:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def bind(self, _path: str) -> None:
+            return None
+
+        def listen(self, _backlog: int) -> None:
+            return None
+
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+        def accept(self) -> tuple[object, None]:
+            raise TimeoutError
+
+    class FakeThread:
+        def __init__(self, *, target, **_kwargs) -> None:
+            self._target = target
+
+        def start(self) -> None:
+            self._target()
+
+        def join(self, _timeout: float | None = None) -> None:
+            return None
+
+    def fail_injection(**_kwargs) -> None:
+        raise PydumpError("GDB did not confirm Agent start: XSAVE failed")
+
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(cli, "resolve_target", lambda *_args: target)
+    monkeypatch.setattr(cli, "verify_agent", lambda *_args: None)
+    monkeypatch.setattr(cli, "install_agent", lambda *_args: (agent, "/tmp/agent.so"))
+    monkeypatch.setattr(cli, "inject", fail_injection)
+    monkeypatch.setattr(cli.socket, "socket", lambda *_args: FakeListener())
+    monkeypatch.setattr(cli.threading, "Thread", FakeThread)
+    monkeypatch.setattr(cli.os, "chown", lambda *_args: None)
+    monkeypatch.setattr(cli.os, "chmod", lambda *_args: None)
+
+    arguments = cli.parser().parse_args(
+        ["--pid", "42", "--file", str(output), "--agent", str(agent)]
+    )
+    with pytest.raises(PydumpError, match="XSAVE failed"):
+        cli.run(arguments)
