@@ -39,9 +39,9 @@ free-threaded CPython、多个独立解释器以及 musl 目标不在当前支�
   ↓
 Collector 创建临时 artifact 和目标可见的 Unix socket
   ↓
-GDB 通过 pending call 等待 Python 执行安全点，再 dlopen 对应版本的 C Agent
+静态 ptrace helper 保存通用寄存器，并在 clone 子任务中 dlopen 对应版本的 C Agent
   ↓
-Agent 启动线程，GDB detach，Agent 获取 GIL 并暂停自动 GC
+helper 调用 Agent 调度入口并 detach；解释器在 pending-call 安全点启动 Agent 线程
   ↓
 Agent 流式发送 well-known type、GC roots 和线程根
   ↓
@@ -54,15 +54,20 @@ Collector 写完 .pyheap v1，回填对象数并校验 footer
 Agent 恢复 GC、释放 GIL；Collector 原子交付 artifact 并清理 session
 ```
 
-GDB 只承担跨 namespace attach、等待安全点、加载共享库和调用启动入口，不执行完整 dump，也不通过
-`PyRun_String` 向目标解释器注入 Python 脚本。Attach 后，Collector 先在空指针输入下安全返回的
-`PyCallable_Check` 设置一次性断点，再通过线程安全的 `Py_AddPendingCall` 请求解释器执行这个 no-op
-callback。解释器在下一个 eval breaker 安全点命中断点后，GDB 才加载 Agent。不能使用
-`_PyEval_EvalFrameDefault` 的“下一次调用”作为安全点：CPython 3.11 及以上会内联 Python-to-Python
-frame，长期运行的现有 eval loop 不保证再次进入该函数。目标若一直不返回解释器安全点，采集应按
-deadline 失败，不能退回任意指令位置强制加载。
+Capture 自带按架构静态链接的 ptrace helper，不依赖目标环境的调试工具、调试符号或扩展寄存器支持。
+helper 只保存和恢复通用寄存器，在目标地址空间建立有界 bootstrap 区，并让共享地址空间的 clone 子任务
+执行 `dlopen`；这避免让被任意暂停的业务线程直接承担动态加载。加载完成后，helper 通过 ELF 映射定位
+`pydump_schedule`，再由第二个 clone 子任务调用它，通过线程安全的 `Py_AddPendingCall` 设置 eval breaker，
+随即恢复寄存器并 detach。业务线程只执行远端 syscall 和 glibc 的 `clone` wrapper；动态加载和 Agent
+调度都不在该线程运行，因此 helper 无需读写易受 CPU/kernel 组合影响的 XSAVE/向量扩展状态。真正的
+参数分配、线程创建和 GIL 获取由解释器在下一个 pending-call 安全点执行。目标若一直不返回解释器安全点，
+Collector 按 deadline 失败，不能在任意指令位置强制开始对象遍历。
 
-Agent 在线程中等待 GIL，因此 snapshot 的起点是 Agent 成功获取 GIL 并完成握手的时刻，而不是 GDB
+ptrace helper 与 Agent 是两个独立 ABI：helper 只与 Linux syscall、目标 ELF 和当前 CPU 架构交互，因此
+可静态构建；Agent 直接读取 CPython 结构，仍必须匹配目标 CPython minor。x86_64 与 AArch64 使用各自的
+通用寄存器、调用约定和短 bootstrap 指令，但共享同一调度入口与 Collector 协议。
+
+Agent 在线程中等待 GIL，因此 snapshot 的起点是 Agent 成功获取 GIL 并完成握手的时刻，而不是 ptrace
 最初 attach 或 pending call 入队的时刻。
 
 Agent 获取 GIL 后显式暂停自动 GC，并在整个地址有效期内持有 GIL。Collector 保存的是裸对象地址，
@@ -145,6 +150,13 @@ attach、版本校验、协议、磁盘或 Agent 任一环节失败都删除本�
 原始原因的错误。Agent 恢复目标进程优先于报告错误；Collector 被强制终止时由 Agent 的 socket EOF 或
 deadline 完成兜底恢复。
 
+helper 只在确认 clone 子任务已写回 `dlopen` 结果后回收 bootstrap 映射。若动态加载超时且子任务状态
+无法确认，helper 会先恢复业务线程并保留这块有界映射；此时泄漏少量目标地址空间比取消映射仍在执行的
+代码或栈更安全。此失败分支必须在证据中明确报告，不能为了清理完整而增加目标崩溃风险。
+
+若 attach 恰好暂停了持有动态加载器内部锁的线程，clone 子任务可能等待该锁直到业务线程恢复。helper
+仍按 deadline detach 并报告失败；一次失败不能偷偷切换到另一套注入语义。
+
 ## 公开接口
 
 Pydump 发布 `pyheap_dump` 可执行文件，并支持 `python -m pydump`。离线分析入口是
@@ -155,7 +167,8 @@ Pydump 发布 `pyheap_dump` 可执行文件，并支持 `python -m pydump`。离
 - `--str-repr-len`，其中 `-1` 禁用字符串预览；
 - `--no-attribute`；
 - `--ignore-compatibility-checks`；
-- `--force-shadow`。
+- `--force-shadow`；
+- `--injector`，用于开发或定制发行时显式选择同架构 ptrace helper。
 
 进度继续表达已完成对象数和待访问对象数。输出文件重名时沿用递增后缀行为。内部 Agent 协议不是公开
 artifact 契约，仅要求 Collector 与 Agent 握手时校验协议版本、CPython minor、指针宽度、字节序和
@@ -172,12 +185,12 @@ session nonce；任一不一致立即终止，不能尝试降级解析。
   不交付部分 artifact。
 - **内存归属**：在 10 万和 100 万对象 fixture 上分别测量目标进程与 Collector。目标侧增量必须受固定
   budget 约束且不随对象数线性增长，Collector 增量允许随对象数增长；目标进程不得打开 dump 文件。
-- **真实 attach 矩阵**：CPython 3.10–3.14 × x86_64/AArch64 使用 native Linux 环境执行 GDB attach；
+- **真实 attach 矩阵**：CPython 3.10–3.14 × x86_64/AArch64 使用 native Linux 环境执行 ptrace attach；
   同时覆盖已进入 eval loop 的 CPU 任务和从阻塞 syscall 返回的任务，防止安全点只对新启动 frame
   生效。发布 Agent 的 ELF symbol version 不得高于 `GLIBC_2.17`。QEMU 只用于交叉构建和基础 smoke
   test，不能替代发布门禁。
 - **跨语言 Analyzer**：Python 与 Go 对共享 golden corpus 产出相同 JSON；大堆 fixture 还需比较耗时和
   峰值 RSS。Doctor 等消费方只依赖 `pydump.analysis/v1`，不依赖具体语言实现。
 
-Apache-2.0 是项目及派生代码的许可边界。复用 PyHeap 的 CLI、namespace、writer 或 GDB 编排实现时，
+Apache-2.0 是项目及派生代码的许可边界。复用 PyHeap 的 CLI、namespace 或 writer 实现时，
 必须保留对应版权头和 NOTICE；Memray、Guppy 等项目只作为实现思路参考，实际代码复用遵循各自许可。

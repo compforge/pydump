@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,87 +32,39 @@ def inject(
     socket_target_path: str,
     nonce: bytes,
     timeout: float,
+    injector_path: Path | None = None,
 ) -> None:
-    gdb = shutil.which("gdb")
-    if gdb is None:
-        raise PydumpError("gdb executable was not found")
+    _inject_with_ptrace(
+        injector=_resolve_ptrace_injector(injector_path),
+        target=target,
+        agent_target_path=agent_target_path,
+        socket_target_path=socket_target_path,
+        nonce=nonce,
+        timeout=timeout,
+    )
 
-    # CPython 3.11+ inlines Python-to-Python frame calls, so waiting for another
-    # _PyEval_EvalFrameDefault entry can block forever. Py_AddPendingCall marks the eval breaker;
-    # its NULL-safe PyCallable_Check callback gives GDB a deterministic interpreter safe point.
-    # Loading the Agent before that point could interrupt an allocator or GC mutation.
+
+def _inject_with_ptrace(
+    *,
+    injector: Path,
+    target: Target,
+    agent_target_path: str,
+    socket_target_path: str,
+    nonce: bytes,
+    timeout: float,
+) -> None:
     command = [
-        gdb,
-        "--batch",
-        "--nx",
-        "--nw",
-        "--readnow",
-        "-iex",
-        f"set sysroot /proc/{target.host_pid}/root",
-        "-ex",
-        "set debuginfod enabled off",
-        "-ex",
-        "set unwindonsignal on",
-        "-ex",
-        "break PyCallable_Check",
-        "-ex",
-        (
-            "set $pydump_pending=(int)Py_AddPendingCall("
-            "(int (*)(void *))PyCallable_Check, (void *)0)"
-        ),
-        "-ex",
-        "if $pydump_pending != 0",
-        "-ex",
-        'printf "PYDUMP_PENDING_CALL_FAILED: %d\\n", $pydump_pending',
-        "-ex",
-        "quit 80",
-        "-ex",
-        "end",
-        "-ex",
-        "continue",
-        "-ex",
-        "delete 1",
-        "-ex",
-        f'set $pydump_agent=(void*)dlopen("{_gdb_string(agent_target_path)}", 2)',
-        "-ex",
-        "if $pydump_agent == 0",
-        "-ex",
-        'printf "PYDUMP_DLOPEN_FAILED: %s\\n", (char*)dlerror()',
-        "-ex",
-        "quit 81",
-        "-ex",
-        "end",
-        "-ex",
-        'set $pydump_start=(void*)dlsym($pydump_agent, "pydump_start")',
-        "-ex",
-        "if $pydump_start == 0",
-        "-ex",
-        'printf "PYDUMP_DLSYM_FAILED: %s\\n", (char*)dlerror()',
-        "-ex",
-        "quit 82",
-        "-ex",
-        "end",
-        "-ex",
-        (
-            "set $pydump_rc=(int)((int (*)(char*, char*))$pydump_start)"
-            f'("{_gdb_string(socket_target_path)}", "{nonce.hex()}")'
-        ),
-        "-ex",
-        'printf "PYDUMP_AGENT_STARTED=%d\\n", $pydump_rc',
-        "-ex",
-        "if $pydump_rc != 0",
-        "-ex",
-        'printf "PYDUMP_START_FAILED: %d\\n", $pydump_rc',
-        "-ex",
-        "quit 83",
-        "-ex",
-        "end",
-        "-ex",
-        "detach",
-        "-ex",
-        "quit",
-        "-p",
+        str(injector),
+        "--pid",
         str(target.host_pid),
+        "--agent",
+        agent_target_path,
+        "--socket",
+        socket_target_path,
+        "--nonce",
+        nonce.hex(),
+        "--timeout",
+        f"{timeout:g}s",
     ]
     try:
         process = subprocess.run(
@@ -122,40 +73,48 @@ def inject(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
+            timeout=timeout + 2,
         )
     except subprocess.TimeoutExpired as error:
         raise PydumpError(
-            f"GDB attach to PID {target.host_pid} timed out after {timeout:g}s"
+            f"ptrace injector for PID {target.host_pid} timed out after {timeout:g}s"
         ) from error
+    output = process.stdout.strip()
     if process.returncode:
-        rendered = shlex.join(command[:7] + ["..."])
-        detail = _gdb_failure_detail(process.stdout)
+        detail = output or "ptrace injector returned no diagnostic"
         raise PydumpError(
-            f"GDB failed for PID {target.host_pid} with code {process.returncode}: {detail}"
-            f"\nCommand: {rendered}\n\nGDB output:\n{process.stdout.strip()}"
+            f"ptrace injector failed for PID {target.host_pid} with code "
+            f"{process.returncode}: {detail}"
         )
-    if _AGENT_STARTED_MARKER not in {line.strip() for line in process.stdout.splitlines()}:
-        output = process.stdout.strip()
-        detail = _gdb_failure_detail(output, fallback="GDB returned no Agent start marker")
+    if _AGENT_STARTED_MARKER not in {line.strip() for line in output.splitlines()}:
         raise PydumpError(
-            f"GDB did not confirm Agent start for PID {target.host_pid}: {detail}"
-            + (f"\n\nGDB output:\n{output}" if output else "")
+            f"ptrace injector did not confirm Agent start for PID {target.host_pid}"
+            + (f": {output}" if output else "")
         )
 
 
-def _gdb_failure_detail(output: str, *, fallback: str = "GDB returned no diagnostic") -> str:
-    return next(
-        (
-            line.strip()
-            for line in output.splitlines()
-            if "extended state status" in line
-            or "gdb.error:" in line
-            or ("PYDUMP_" in line and "FAILED" in line)
-        ),
-        fallback,
-    )
-
-
-def _gdb_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+def _resolve_ptrace_injector(explicit: Path | None) -> Path:
+    candidate = explicit
+    if candidate is None:
+        configured = os.environ.get("PYDUMP_INJECTOR")
+        if configured:
+            candidate = Path(configured)
+    machine = os.uname().machine
+    names = {
+        "x86_64": "pydump-injector-linux-x86_64",
+        "aarch64": "pydump-injector-linux-aarch64",
+        "arm64": "pydump-injector-linux-aarch64",
+    }
+    if candidate is None and machine in names:
+        bundled = Path(__file__).with_name("injectors") / names[machine]
+        if bundled.exists():
+            candidate = bundled
+    if candidate is None:
+        raise PydumpError(
+            f"no ptrace injector is bundled for Linux {machine}; pass --injector explicitly"
+        )
+    if not candidate.is_file():
+        raise PydumpError(f"ptrace injector {candidate} does not exist")
+    if not os.access(candidate, os.X_OK):
+        raise PydumpError(f"ptrace injector {candidate} is not executable")
+    return candidate

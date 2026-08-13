@@ -7,18 +7,21 @@ visited-address set, and output file.
 The generated artifact uses PyHeap's `.pyheap` v1 format. Independent Python and Go analyzers read
 that artifact and emit the language-neutral `pydump.analysis/v1` JSON protocol.
 
-Pydump is inspired by [PyHeap](https://github.com/ivanyu/pyheap), whose GDB-based heap dumper,
-artifact format, and analysis workflow established the foundation for this project.
+Pydump is inspired by [PyHeap](https://github.com/ivanyu/pyheap), whose heap artifact format and
+analysis workflow established the foundation for this project.
+The remote loading design was also informed by
+[kubo/injector](https://github.com/kubo/injector); Pydump does not link or vendor that project.
 
 ## Status
 
-Pydump is alpha software. The protocol, Collector, artifact writer, and CPython 3.10+ native agent
-are implemented. Native attach requires Linux glibc, GDB, and an agent built for the target CPython
-minor version. CPython 3.10 and 3.11 use minor-specific internal GC layouts and therefore require
-their real attach matrix before a build is released.
+Pydump is alpha software. The protocol, Collector, artifact writer, CPython 3.10+ native Agent, and
+static Linux ptrace injectors for x86_64/AArch64 are implemented. Native capture requires
+`SYS_PTRACE` and an Agent built for the target CPython minor version.
+CPython 3.10 and 3.11 use minor-specific internal GC layouts and therefore require their real attach
+matrix before a build is released.
 
 Live capture pauses Python execution while the Agent holds the GIL. This prototype is not ready for
-production use until Linux GDB attach, timeout recovery, target-memory budgets, and the full
+production use until Linux ptrace attach, timeout recovery, target-memory budgets, and the full
 3.10–3.14 x86_64/AArch64 matrix have passed.
 
 ## Build
@@ -26,11 +29,13 @@ production use until Linux GDB attach, timeout recovery, target-memory budgets, 
 ```bash
 uv sync --all-packages
 make build-agent
+make build-injector
 make build-go
 ```
 
-The agent is written to `capture/agent/build/pydump-agent-<python-minor>-<arch>.so`. Build it with
-the same CPython minor used by the target process.
+The Agent is written to `capture/agent/build/pydump-agent-<python-minor>-<arch>.so`. Build it with
+the same CPython minor used by the target process. `make build-injector` produces static x86_64 and
+AArch64 helpers under the Collector package; release wheels include the matching helper.
 
 ## Capture
 
@@ -38,6 +43,9 @@ the same CPython minor used by the target process.
 uv run --package pydump pyheap_dump --pid 1234 --file process.pyheap \
   --agent capture/agent/build/pydump-agent-3.12-x86_64.so
 ```
+
+The Collector selects its bundled ptrace injector by architecture. `--injector` can select an
+explicit helper during development or custom packaging.
 
 The familiar PyHeap flags remain available: `--str-repr-len`, `--no-attribute`,
 `--ignore-compatibility-checks`, and `--force-shadow`. Pydump never calls application-defined
@@ -74,6 +82,7 @@ make fix
 make lint
 make test
 make test-native
+make test-injector  # Linux only
 make test-compat  # when fork-pyheap is available beside this checkout
 ```
 

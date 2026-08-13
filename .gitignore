@@ -10,3 +10,4 @@ dist/
 *.pyc
 *.so
 *.dylib
+capture/collector/src/pydump/injectors/pydump-injector-*
