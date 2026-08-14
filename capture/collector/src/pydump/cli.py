@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from pydump import __version__
 from pydump.collector import CaptureStats, Collector
 from pydump.errors import PydumpError
 from pydump.loader import LoaderKind, LoadRequest, install_agent, select_loader
@@ -19,6 +20,7 @@ _LOADER_POLL_SECONDS = 0.1
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Dump a live CPython heap.", allow_abbrev=False)
+    result.add_argument("--version", action="version", version=f"pydump {__version__}")
     target = result.add_mutually_exclusive_group(required=True)
     target.add_argument("--pid", "-p", type=int, help="target process PID")
     target.add_argument("--docker-container", help="target Docker container")

@@ -18,6 +18,12 @@ def test_pyheap_compatible_defaults() -> None:
     assert args.loader == "auto"
 
 
+def test_version_is_available_without_a_capture_target(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        cli.parser().parse_args(["--version"])
+    assert capsys.readouterr().out == "pydump 0.2.0\n"
+
+
 def test_targets_are_mutually_exclusive() -> None:
     with pytest.raises(SystemExit):
         cli.parser().parse_args(
