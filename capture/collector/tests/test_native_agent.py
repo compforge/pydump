@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -95,6 +96,64 @@ while True:
                 "ptrace",
                 "--pydump-loader",
                 str(loader),
+                "--no-attribute",
+                "--str-repr-len",
+                "-1",
+            ]
+        )
+        assert cli.run(arguments) == output
+    finally:
+        if target.poll() is None:
+            target.terminate()
+        target.wait(timeout=5)
+
+    assert output.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    "PYDUMP_NATIVE_AGENT" not in os.environ
+    or ("PYDUMP_GDB" not in os.environ and shutil.which("gdb") is None),
+    reason="set a matching native Agent and install GDB or set PYDUMP_GDB",
+)
+def test_gdb_loader_captures_a_real_cpython_heap(tmp_path: Path) -> None:
+    agent = Path(os.environ["PYDUMP_NATIVE_AGENT"]).resolve()
+    gdb = Path(os.environ.get("PYDUMP_GDB") or shutil.which("gdb") or "").resolve()
+    output = tmp_path / "gdb.pyheap"
+    target_code = """
+import ctypes
+import os
+import time
+
+libc = ctypes.CDLL(None)
+if libc.prctl(0x59616D61, -1, 0, 0, 0) != 0:
+    raise RuntimeError("PR_SET_PTRACER_ANY failed")
+heap = [{"index": index} for index in range(10_000)]
+print(os.getpid(), len(heap), flush=True)
+while True:
+    time.sleep(1)
+"""
+    target = subprocess.Popen(
+        [sys.executable, "-c", target_code],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert target.stdout is not None
+        ready = target.stdout.readline().split()
+        assert ready[1] == "10000"
+        arguments = cli.parser().parse_args(
+            [
+                "--pid",
+                ready[0],
+                "--file",
+                str(output),
+                "--agent",
+                str(agent),
+                "--loader",
+                "gdb",
+                "--gdb",
+                str(gdb),
                 "--no-attribute",
                 "--str-repr-len",
                 "-1",

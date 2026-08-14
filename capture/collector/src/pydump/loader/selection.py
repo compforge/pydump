@@ -20,7 +20,7 @@ def select_loader(
     environment = inspect_target_environment(target)
     probes: list[tuple[LoaderProbe, AgentLoader | None]] = []
     if kind in {LoaderKind.AUTO, LoaderKind.GDB}:
-        gdb_probe, gdb_loader = probe_gdb_loader(gdb)
+        gdb_probe, gdb_loader = probe_gdb_loader(gdb, environment.machine)
         probes.append((gdb_probe, gdb_loader))
         if gdb_probe.available and gdb_loader is not None:
             return gdb_loader

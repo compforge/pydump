@@ -66,6 +66,7 @@ Python 或 Go 代码改动后运行 `make fix`、`make lint` 和 `make test`。�
 
 - `README.md` — 使用者视角的状态、构建、采集和验证入口
 - `docs/kernel.md` — Capture/Contract/Analyzer 模型、资源归属、安全边界和发布门禁
+- `docs/backlog.md` — 暂缓的 native ptrace Loader 加固边界与重新启动条件
 - `analyzer/README.md` — 多语言 Analyzer 的实现与运行边界
 - `contracts/README.md`、`contracts/analysis-v1.md` — artifact 与分析结果的语言中立契约
 - `NOTICE` — PyHeap 兼容实现的来源与许可归属
