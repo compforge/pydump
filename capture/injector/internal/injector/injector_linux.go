@@ -74,7 +74,7 @@ func Inject(options Options) (result error) {
 	if err != nil {
 		return fmt.Errorf("resolve dlopen: %w", err)
 	}
-	clone, err := findSymbol(options.PID, maps, []string{"clone", "__clone"})
+	clone, err := resolveClone(options.PID, maps)
 	if err != nil {
 		return fmt.Errorf("resolve clone: %w", err)
 	}
@@ -119,15 +119,18 @@ func Inject(options Options) (result error) {
 	if err := target.write(dataAddress, arguments); err != nil {
 		return fmt.Errorf("write dlopen arguments: %w", err)
 	}
-	if err := target.write(codeAddress, dlopenShellcode); err != nil {
-		return fmt.Errorf("write dlopen bootstrap: %w", err)
-	}
 	childStack := (target.stackTop - pageSize) &^ uintptr(15)
 	// Once clone starts, unmapping its code or stack is unsafe until the child
 	// has stored a final dlopen result. On an indeterminate timeout we prefer a
 	// bounded target-side mapping leak to crashing the process under diagnosis.
 	bootstrapInUse = true
-	child, err := target.call(clone.address, codeAddress, childStack, cloneVM, dataAddress)
+	child, err := target.startClone(
+		clone.address,
+		codeAddress,
+		childStack,
+		dataAddress,
+		dlopenShellcode,
+	)
 	if err != nil {
 		return fmt.Errorf("start dlopen thread: %w", err)
 	}
@@ -169,11 +172,14 @@ func Inject(options Options) (result error) {
 	if err := target.write(dataAddress, scheduleData); err != nil {
 		return fmt.Errorf("write schedule arguments: %w", err)
 	}
-	if err := target.write(codeAddress, scheduleShellcode); err != nil {
-		return fmt.Errorf("write schedule bootstrap: %w", err)
-	}
 	bootstrapInUse = true
-	child, err = target.call(clone.address, codeAddress, childStack, cloneVM, dataAddress)
+	child, err = target.startClone(
+		clone.address,
+		codeAddress,
+		childStack,
+		dataAddress,
+		scheduleShellcode,
+	)
 	if err != nil {
 		return fmt.Errorf("start schedule thread: %w", err)
 	}
@@ -296,14 +302,20 @@ func (target *tracee) execute(regs *registers, code []byte) (result uintptr, err
 				err = errors.Join(err, fmt.Errorf("restore bootstrap instruction: %w", restoreErr))
 			}
 		}
-		if restoreErr := setRegisters(target.pid, &target.regs); restoreErr != nil {
-			err = errors.Join(err, fmt.Errorf("restore general registers: %w", restoreErr))
-		}
 	}()
 	if _, err := syscall.PtracePokeText(target.pid, target.code, code); err != nil {
 		return 0, fmt.Errorf("write bootstrap instruction: %w", err)
 	}
 	restoreCode = true
+	return target.executeRegisters(regs)
+}
+
+func (target *tracee) executeRegisters(regs *registers) (result uintptr, err error) {
+	defer func() {
+		if restoreErr := setRegisters(target.pid, &target.regs); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore general registers: %w", restoreErr))
+		}
+	}()
 	if err := setRegisters(target.pid, regs); err != nil {
 		return 0, fmt.Errorf("set general registers: %w", err)
 	}
@@ -315,7 +327,11 @@ func (target *tracee) execute(regs *registers, code []byte) (result uintptr, err
 		return 0, fmt.Errorf("wait for remote operation: %w", err)
 	}
 	if !status.Stopped() || status.StopSignal() != syscall.SIGTRAP {
-		return 0, fmt.Errorf("remote operation stopped unexpectedly: %#x", uint32(status))
+		return 0, fmt.Errorf(
+			"remote operation stopped by %s (wait status %#x)",
+			status.StopSignal(),
+			uint32(status),
+		)
 	}
 	var completed registers
 	if err := getRegisters(target.pid, &completed); err != nil {
