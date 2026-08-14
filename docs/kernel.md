@@ -16,7 +16,7 @@ Kernel 由三个稳定概念组成：
 - **Analyzer** 在采集完成后离线读取 artifact，生成 summary 或 retained heap。实现语言和部署位置不进入
   契约；Python 与 Go 实现不互相依赖。
 
-Capture 内的 **Loader** 负责探测目标进程的架构、libc 和可用加载工具，并选择 GDB 或 ptrace 启动
+Capture 内的 **Loader** 负责探测目标进程的架构、libc 和可用加载工具，并选择 GDB 或 `pydump-loader` 启动
 Agent。**Agent** 是进入目标进程的 C 共享库；它在持有 GIL 时读取 Collector 指定的对象，通过有界
 socket 协议返回事实，不保存全堆队列、visited set 或 dump 文件。
 
@@ -40,7 +40,7 @@ free-threaded CPython、多个独立解释器以及 musl 目标不在当前支�
   ↓
 Collector 创建临时 artifact 和目标可见的 Unix socket
   ↓
-Loader 根据无副作用 probe 选择 GDB 或静态 ptrace helper，加载对应版本的 C Agent
+Loader 根据无副作用 probe 选择 GDB 或静态 `pydump-loader`，加载对应版本的 C Agent
   ↓
 helper 调用 Agent 调度入口并 detach；解释器在 pending-call 安全点启动 Agent 线程
   ↓
@@ -56,21 +56,21 @@ Agent 恢复 GC、释放 GIL；Collector 原子交付 artifact 并清理 session
 ```
 
 Loader 先验证 Collector 与目标 ELF 架构一致，并确认目标使用 glibc。自动选择优先使用可执行且能完成
-自身 probe 的 GDB；GDB 不可用时才选择随包发布的同架构 ptrace helper。显式选择只探测指定 Loader。
+自身 probe 的 GDB；GDB 不可用时才选择随包发布的同架构 `pydump-loader`。显式选择只探测指定 Loader。
 probe 不 attach、不修改目标状态；Loader 一旦开始 attach，失败后不得自动切换策略重试，因为前一次
 尝试可能已经完成 `dlopen` 或提交 pending call，重试会制造并发 session。
 
 GDB Loader 利用成熟调试器完成寄存器和调用约定适配。它先通过 `Py_AddPendingCall` 让解释器到达安全点，
 再执行 `dlopen` 和 `pydump_start`，确认 Agent thread 已启动后立即 detach，不参与后续对象遍历。
 
-ptrace Loader 自带按架构静态链接的 helper。helper 只保存和恢复通用寄存器，在目标地址空间建立有界
+`pydump-loader` 按架构静态链接，只保存和恢复通用寄存器，在目标地址空间建立有界
 bootstrap 区，并让共享地址空间的 clone 子任务执行 `dlopen`。加载完成后，helper 通过 ELF 映射定位
 `pydump_schedule`，再由第二个 clone 子任务调用它，通过线程安全的 `Py_AddPendingCall` 设置 eval
 breaker，随即恢复寄存器并 detach。真正的参数分配、线程创建和 GIL 获取由解释器在下一个 pending-call
 安全点执行。目标若一直不返回解释器安全点，Collector 按 deadline 失败，不能在任意指令位置强制开始
 对象遍历。
 
-ptrace helper 与 Agent 是两个独立 ABI：helper 只与 Linux syscall、目标 ELF 和当前 CPU 架构交互，因此
+`pydump-loader` 与 Agent 是两个独立 ABI：前者只与 Linux syscall、目标 ELF 和当前 CPU 架构交互，因此
 可静态构建；Agent 直接读取 CPython 结构，仍必须匹配目标 CPython minor。x86_64 与 AArch64 使用各自的
 通用寄存器、调用约定和短 bootstrap 指令，但共享同一调度入口与 Collector 协议。
 
@@ -176,7 +176,7 @@ Pydump 发布 `pyheap_dump` 可执行文件，并支持 `python -m pydump`。离
 - `--ignore-compatibility-checks`；
 - `--force-shadow`；
 - `--loader auto|gdb|ptrace`；
-- `--gdb` 与 `--ptrace-loader`，用于显式选择对应 Loader 的可执行文件。
+- `--gdb` 与 `--pydump-loader`，用于显式选择对应 Loader 的可执行文件。
 
 进度继续表达已完成对象数和待访问对象数。输出文件重名时沿用递增后缀行为。内部 Agent 协议不是公开
 artifact 契约，仅要求 Collector 与 Agent 握手时校验协议版本、CPython minor、指针宽度、字节序和
@@ -194,7 +194,7 @@ session nonce；任一不一致立即终止，不能尝试降级解析。
 - **内存归属**：在 10 万和 100 万对象 fixture 上分别测量目标进程与 Collector。目标侧增量必须受固定
   budget 约束且不随对象数线性增长，Collector 增量允许随对象数增长；目标进程不得打开 dump 文件。
 - **真实 attach 矩阵**：CPython 3.10–3.14 × x86_64/AArch64 使用 native Linux 环境分别执行 GDB 与
-  ptrace Loader attach；同时覆盖已进入 eval loop 的 CPU 任务和从阻塞 syscall 返回的任务，防止安全点
+  `pydump-loader` attach；同时覆盖已进入 eval loop 的 CPU 任务和从阻塞 syscall 返回的任务，防止安全点
   只对新启动 frame 生效。发布 Agent 的 ELF symbol version 不得高于 `GLIBC_2.17`。QEMU 只用于交叉
   构建和基础 smoke test，不能替代发布门禁。
 - **跨语言 Analyzer**：Python 与 Go 对共享 golden corpus 产出相同 JSON；大堆 fixture 还需比较耗时和

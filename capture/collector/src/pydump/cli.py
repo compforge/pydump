@@ -65,10 +65,10 @@ def parser() -> argparse.ArgumentParser:
         help="GDB executable used by the gdb loader",
     )
     result.add_argument(
-        "--ptrace-loader",
+        "--pydump-loader",
         type=Path,
         default=None,
-        help="native ptrace loader executable for the target architecture",
+        help="pydump-loader executable for the target architecture",
     )
     result.add_argument("--timeout", type=float, default=30.0, help=argparse.SUPPRESS)
     return result
@@ -82,7 +82,7 @@ def run(arguments: argparse.Namespace) -> Path:
         target=target,
         kind=LoaderKind(arguments.loader),
         gdb=arguments.gdb,
-        ptrace_loader=arguments.ptrace_loader,
+        pydump_loader=arguments.pydump_loader,
     )
     _, agent_target_path = install_agent(target, agent)
     print(f"Loader: {loader.kind.value} ({loader.executable})")

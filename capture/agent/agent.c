@@ -702,7 +702,7 @@ pydump_schedule(const char *socket_path, const char *nonce_hex)
         return 5;
     }
 
-    /* The ptrace loader calls this from a minimal clone task without the GIL.
+    /* pydump-loader calls this from a minimal clone task without the GIL.
        Py_AddPendingCall does not require the caller to hold the GIL on the
        supported CPython versions; keep this path allocation-free and run the
        real start routine at the next pending-call safe point with the GIL held. */

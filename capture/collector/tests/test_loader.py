@@ -12,7 +12,7 @@ from pydump.errors import PydumpError
 from pydump.loader.environment import TargetEnvironment, _classify_libc, _parse_machine
 from pydump.loader.gdb import GdbLoader
 from pydump.loader.model import LoaderKind, LoaderProbe, LoadRequest
-from pydump.loader.ptrace import PtraceLoader
+from pydump.loader.ptrace import PydumpLoader
 from pydump.target import Target
 
 _NONCE = bytes.fromhex("00112233445566778899aabbccddeeff")
@@ -48,10 +48,10 @@ def test_target_libc_is_read_from_process_maps(maps: str, expected: str) -> None
     assert _classify_libc(maps) == expected
 
 
-def test_ptrace_loader_starts_agent_with_explicit_protocol(
+def test_pydump_loader_starts_agent_with_explicit_protocol(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    executable = tmp_path / "pydump-injector"
+    executable = tmp_path / "pydump-loader"
     executable.touch(mode=0o755)
     captured: list[str] = []
 
@@ -60,28 +60,28 @@ def test_ptrace_loader_starts_agent_with_explicit_protocol(
         return subprocess.CompletedProcess(command, 0, "PYDUMP_AGENT_STARTED=0\n")
 
     monkeypatch.setattr(ptrace_module.subprocess, "run", run)
-    PtraceLoader(executable).start(request())
+    PydumpLoader(executable).start(request())
 
     assert captured[0] == str(executable)
     assert captured[captured.index("--pid") + 1] == "42"
     assert captured[captured.index("--nonce") + 1] == _NONCE.hex()
 
 
-def test_ptrace_loader_surfaces_native_diagnostic(
+def test_pydump_loader_surfaces_native_diagnostic(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    executable = tmp_path / "pydump-injector"
+    executable = tmp_path / "pydump-loader"
     executable.touch(mode=0o755)
     monkeypatch.setattr(
         ptrace_module.subprocess,
         "run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 1, "pydump-injector: attach PID 42: operation not permitted\n"
+            [], 1, "pydump-loader: attach PID 42: operation not permitted\n"
         ),
     )
 
     with pytest.raises(PydumpError, match="attach PID 42: operation not permitted"):
-        PtraceLoader(executable).start(request())
+        PydumpLoader(executable).start(request())
 
 
 def test_gdb_loader_waits_for_pending_call_safepoint(
@@ -138,15 +138,15 @@ def test_auto_loader_prefers_gdb(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         selection,
-        "probe_ptrace_loader",
-        lambda **_kwargs: pytest.fail("ptrace should not be probed after GDB is selected"),
+        "probe_pydump_loader",
+        lambda **_kwargs: pytest.fail("pydump-loader should not be probed after GDB is selected"),
     )
 
     selected = selection.select_loader(
         target=request().target,
         kind=LoaderKind.AUTO,
         gdb=None,
-        ptrace_loader=None,
+        pydump_loader=None,
     )
     assert selected is gdb
 
@@ -157,7 +157,7 @@ def test_auto_loader_uses_ptrace_when_gdb_is_unavailable(
     environment = TargetEnvironment("aarch64", "glibc", "5.10")
     ptrace = SimpleNamespace(
         kind=LoaderKind.PTRACE,
-        executable=Path("/opt/pydump-injector"),
+        executable=Path("/opt/pydump-loader"),
     )
     monkeypatch.setattr(selection, "inspect_target_environment", lambda _target: environment)
     monkeypatch.setattr(
@@ -167,7 +167,7 @@ def test_auto_loader_uses_ptrace_when_gdb_is_unavailable(
     )
     monkeypatch.setattr(
         selection,
-        "probe_ptrace_loader",
+        "probe_pydump_loader",
         lambda **_kwargs: (LoaderProbe(LoaderKind.PTRACE, True, "ready"), ptrace),
     )
 
@@ -175,7 +175,7 @@ def test_auto_loader_uses_ptrace_when_gdb_is_unavailable(
         target=request().target,
         kind=LoaderKind.AUTO,
         gdb=None,
-        ptrace_loader=None,
+        pydump_loader=None,
     )
     assert selected is ptrace
 
@@ -194,5 +194,5 @@ def test_explicit_loader_reports_probe_reason(monkeypatch: pytest.MonkeyPatch) -
             target=request().target,
             kind=LoaderKind.GDB,
             gdb=None,
-            ptrace_loader=None,
+            pydump_loader=None,
         )

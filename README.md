@@ -15,7 +15,7 @@ The remote loading design was also informed by
 ## Status
 
 Pydump is alpha software. The protocol, Collector, artifact writer, CPython 3.10+ native Agent,
-GDB Loader, and static Linux ptrace Loader for x86_64/AArch64 are implemented. Native capture
+GDB Loader, and static Linux `pydump-loader` executables for x86_64/AArch64 are implemented. Native capture
 requires `SYS_PTRACE` and an Agent built for the target CPython minor version.
 CPython 3.10 and 3.11 use minor-specific internal GC layouts and therefore require their real attach
 matrix before a build is released.
@@ -29,12 +29,12 @@ production use until Linux ptrace attach, timeout recovery, target-memory budget
 ```bash
 uv sync --all-packages
 make build-agent
-make build-ptrace-loader
+make build-loader
 make build-go
 ```
 
 The Agent is written to `capture/agent/build/pydump-agent-<python-minor>-<arch>.so`. Build it with
-the same CPython minor used by the target process. `make build-ptrace-loader` produces static
+the same CPython minor used by the target process. `make build-loader` produces static
 x86_64 and AArch64 helpers under the Collector package; release wheels include the matching helper.
 
 ## Capture
@@ -45,8 +45,8 @@ uv run --package pydump pyheap_dump --pid 1234 --file process.pyheap \
 ```
 
 The Collector probes the target architecture and libc, then selects an Agent Loader. `auto`
-prefers GDB when it is available and falls back to the bundled ptrace Loader. Use
-`--loader gdb|ptrace` to require a strategy; `--gdb` and `--ptrace-loader` select an explicit
+prefers GDB when it is available and falls back to the bundled `pydump-loader`. Use
+`--loader gdb|ptrace` to require a strategy; `--gdb` and `--pydump-loader` select an explicit
 executable.
 
 The familiar PyHeap flags remain available: `--str-repr-len`, `--no-attribute`,
@@ -84,7 +84,7 @@ make fix
 make lint
 make test
 make test-native
-make test-ptrace-loader  # Linux only
+make test-loader  # Linux only
 make test-compat  # when fork-pyheap is available beside this checkout
 ```
 

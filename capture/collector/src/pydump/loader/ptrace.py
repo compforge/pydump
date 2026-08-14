@@ -10,13 +10,13 @@ from pydump.loader.model import LoaderKind, LoaderProbe, LoadRequest
 
 _AGENT_STARTED_MARKER = "PYDUMP_AGENT_STARTED=0"
 _BUNDLED_NAMES = {
-    "x86_64": "pydump-injector-linux-x86_64",
-    "aarch64": "pydump-injector-linux-aarch64",
+    "x86_64": "pydump-loader-linux-x86_64",
+    "aarch64": "pydump-loader-linux-aarch64",
 }
 
 
 @dataclass(frozen=True)
-class PtraceLoader:
+class PydumpLoader:
     executable: Path
     kind = LoaderKind.PTRACE
 
@@ -45,29 +45,29 @@ class PtraceLoader:
             )
         except subprocess.TimeoutExpired as error:
             raise PydumpError(
-                f"ptrace loader for PID {request.target.host_pid} timed out after "
+                f"pydump-loader for PID {request.target.host_pid} timed out after "
                 f"{request.timeout:g}s"
             ) from error
         output = process.stdout.strip()
         if process.returncode:
-            detail = output or "ptrace loader returned no diagnostic"
+            detail = output or "pydump-loader returned no diagnostic"
             raise PydumpError(
-                f"ptrace loader failed for PID {request.target.host_pid} with code "
+                f"pydump-loader failed for PID {request.target.host_pid} with code "
                 f"{process.returncode}: {detail}"
             )
         if _AGENT_STARTED_MARKER not in {line.strip() for line in output.splitlines()}:
             raise PydumpError(
-                f"ptrace loader did not confirm Agent start for PID {request.target.host_pid}"
+                f"pydump-loader did not confirm Agent start for PID {request.target.host_pid}"
                 + (f": {output}" if output else "")
             )
 
 
-def probe_ptrace_loader(
+def probe_pydump_loader(
     *, machine: str, executable: Path | None
-) -> tuple[LoaderProbe, PtraceLoader | None]:
+) -> tuple[LoaderProbe, PydumpLoader | None]:
     candidate = executable
     if candidate is None:
-        configured = os.environ.get("PYDUMP_PTRACE_LOADER")
+        configured = os.environ.get("PYDUMP_LOADER")
         if configured:
             candidate = Path(configured)
     if candidate is None:
@@ -80,10 +80,10 @@ def probe_ptrace_loader(
         if bundled.exists():
             candidate = bundled
     if candidate is None:
-        return LoaderProbe(LoaderKind.PTRACE, False, "no bundled ptrace loader"), None
+        return LoaderProbe(LoaderKind.PTRACE, False, "no bundled pydump-loader"), None
     if not candidate.is_file():
         return LoaderProbe(LoaderKind.PTRACE, False, f"{candidate} does not exist"), None
     if not os.access(candidate, os.X_OK):
         return LoaderProbe(LoaderKind.PTRACE, False, f"{candidate} is not executable"), None
     resolved = candidate.resolve()
-    return LoaderProbe(LoaderKind.PTRACE, True, str(resolved)), PtraceLoader(resolved)
+    return LoaderProbe(LoaderKind.PTRACE, True, str(resolved)), PydumpLoader(resolved)
