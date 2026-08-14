@@ -30,7 +30,7 @@ func main() {
 		Nonce:      *nonce,
 		Timeout:    *timeout,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "pydump-injector: %v\n", err)
+		fmt.Fprintf(os.Stderr, "pydump-loader: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("PYDUMP_AGENT_STARTED=0")

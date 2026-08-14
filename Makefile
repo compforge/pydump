@@ -1,4 +1,4 @@
-.PHONY: benchmark-native benchmark-transport benchmark-writer build-agent build-go build-ptrace-loader build-python fix lint test test-compat test-native test-ptrace-loader
+.PHONY: benchmark-native benchmark-transport benchmark-writer build-agent build-go build-loader build-python fix lint test test-compat test-loader test-native
 
 PYTHON ?= python3
 PYHEAP_UI_SRC ?= ../fork-pyheap/pyheap-ui/src
@@ -31,7 +31,7 @@ test-native: build-agent
 	PYDUMP_NATIVE_AGENT=$$(find capture/agent/build -name 'pydump-agent-*.so' -print -quit) \
 		PYTHONPATH=capture/collector/src uv run --all-packages pytest capture/collector/tests/test_native_agent.py
 
-test-ptrace-loader:
+test-loader:
 	cd capture/loader/injector && go test ./...
 
 benchmark-transport:
@@ -47,7 +47,7 @@ benchmark-native: build-agent
 build-agent:
 	$(MAKE) -C capture/agent PYTHON=$(PYTHON)
 
-build-python: build-ptrace-loader
+build-python: build-loader
 	uv build --package pydump --out-dir dist/capture
 	uv build --package pydump-analyzer --out-dir dist/analyzer-python
 
@@ -56,13 +56,13 @@ build-go:
 	cd analyzer/go && go build -o ../../dist/analyzer-go/pydump_analyzer ./cmd/pydump-analyzer
 	cp LICENSE NOTICE dist/analyzer-go/
 
-build-ptrace-loader:
+build-loader:
 	mkdir -p capture/collector/src/pydump/loader/bin
 	cd capture/loader/injector && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 		-ldflags='-s -w' \
-		-o ../../collector/src/pydump/loader/bin/pydump-injector-linux-x86_64 \
-		./cmd/pydump-injector
+		-o ../../collector/src/pydump/loader/bin/pydump-loader-linux-x86_64 \
+		./cmd/pydump-loader
 	cd capture/loader/injector && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 		-ldflags='-s -w' \
-		-o ../../collector/src/pydump/loader/bin/pydump-injector-linux-aarch64 \
-		./cmd/pydump-injector
+		-o ../../collector/src/pydump/loader/bin/pydump-loader-linux-aarch64 \
+		./cmd/pydump-loader

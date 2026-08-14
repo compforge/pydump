@@ -22,7 +22,7 @@ Pydump 是面向存量 CPython 进程的低目标内存 heap dumper。它通过�
 │   │   ├── tests/
 │   │   └── benchmarks/
 │   ├── loader/         # 目标环境探测与 Agent Loader；GDB、ptrace 是平行策略
-│   │   └── injector/   # ptrace Loader 使用的静态跨进程 helper
+│   │   └── injector/   # pydump-loader 的静态跨进程实现
 │   └── agent/          # 注入目标 CPython 的 C Agent；只保留有界 session 状态
 ├── analyzer/
 │   ├── python/         # Python 参考实现及独立 package
@@ -50,7 +50,7 @@ Pydump 是面向存量 CPython 进程的低目标内存 heap dumper。它通过�
 6. **部分 artifact 不得交付**：Collector 写同目录临时文件，只在 Agent 完成、footer 校验和 flush 成功后
    原子改名；任何失败都应保留带 PID、阶段和原始原因的错误上下文。
 7. **发布以真实环境矩阵为准**：本地 native smoke 只验证 C/Python 协议和对象遍历。正式发布前必须通过
-   Linux glibc 上 CPython 3.10–3.14 × x86_64/AArch64 的 GDB/ptrace Loader、超时恢复和内存预算测试。
+   Linux glibc 上 CPython 3.10–3.14 × x86_64/AArch64 的 GDB/`pydump-loader`、超时恢复和内存预算测试。
 8. **分析与采集进程隔离**：Analyzer 只能从已交付 artifact 构建 O(N) 对象图和 inbound index，不得
    通过 Agent 回到目标进程补数据。各语言实现不互相依赖，UI 不进入 Analyzer。
 
@@ -58,7 +58,7 @@ Pydump 是面向存量 CPython 进程的低目标内存 heap dumper。它通过�
 
 Python 或 Go 代码改动后运行 `make fix`、`make lint` 和 `make test`。修改 `capture/agent/`、采集协议或
 对象图语义时，额外运行 `make build-agent` 与 `make test-native`；修改
-`capture/loader/injector/` 时在 Linux 运行 `make test-ptrace-loader`；修改 artifact writer 时还需运行
+`capture/loader/injector/` 时在 Linux 运行 `make test-loader`；修改 artifact writer 时还需运行
 `make test-compat`。`make test-compat` 依赖相邻工作区中的 fork-pyheap，仅用于以 upstream reader 验证
 公开 artifact 契约。
 
