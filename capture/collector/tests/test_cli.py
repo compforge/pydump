@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pydump.cli as cli
 import pytest
 from pydump.errors import PydumpError
+from pydump.loader import LoaderKind
 
 
 def test_pyheap_compatible_defaults() -> None:
@@ -14,6 +15,7 @@ def test_pyheap_compatible_defaults() -> None:
     assert args.pid == 12
     assert args.str_repr_len == 1000
     assert args.no_attribute is False
+    assert args.loader == "auto"
 
 
 def test_targets_are_mutually_exclusive() -> None:
@@ -28,7 +30,7 @@ def test_negative_preview_below_disabled_value_is_rejected() -> None:
         cli.parser().parse_args(["--pid", "12", "--file", "heap.pyheap", "--str-repr-len", "-2"])
 
 
-def test_injector_teardown_failure_preserves_delivered_artifact(
+def test_loader_teardown_failure_preserves_delivered_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target_root = tmp_path / "target-root"
@@ -83,14 +85,17 @@ def test_injector_teardown_failure_preserves_delivered_artifact(
             path.write_bytes(b"complete artifact")
             return path, 1
 
-    def fail_after_capture(**_kwargs) -> None:
-        raise PydumpError("ptrace injector detach failed")
+    class FailingLoader:
+        kind = LoaderKind.PTRACE
+        executable = Path("/opt/pydump-injector")
 
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+        def start(self, _request: object) -> None:
+            raise PydumpError("ptrace loader detach failed")
+
     monkeypatch.setattr(cli, "resolve_target", lambda *_args: target)
     monkeypatch.setattr(cli, "verify_agent", lambda *_args: None)
     monkeypatch.setattr(cli, "install_agent", lambda *_args: (agent, "/tmp/agent.so"))
-    monkeypatch.setattr(cli, "inject", fail_after_capture)
+    monkeypatch.setattr(cli, "select_loader", lambda **_kwargs: FailingLoader())
     monkeypatch.setattr(cli.socket, "socket", lambda *_args: FakeListener())
     monkeypatch.setattr(cli.threading, "Thread", FakeThread)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
@@ -100,13 +105,13 @@ def test_injector_teardown_failure_preserves_delivered_artifact(
     arguments = cli.parser().parse_args(
         ["--pid", "42", "--file", str(output), "--agent", str(agent)]
     )
-    with pytest.raises(PydumpError, match="ptrace injector detach failed"):
+    with pytest.raises(PydumpError, match="ptrace loader detach failed"):
         cli.run(arguments)
 
     assert output.read_bytes() == b"complete artifact"
 
 
-def test_agent_connect_timeout_prefers_completed_injector_error(
+def test_agent_connect_timeout_prefers_completed_loader_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target_root = tmp_path / "target-root"
@@ -150,14 +155,17 @@ def test_agent_connect_timeout_prefers_completed_injector_error(
         def join(self, _timeout: float | None = None) -> None:
             return None
 
-    def fail_injection(**_kwargs) -> None:
-        raise PydumpError("ptrace injector did not confirm Agent start")
+    class FailingLoader:
+        kind = LoaderKind.PTRACE
+        executable = Path("/opt/pydump-injector")
 
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+        def start(self, _request: object) -> None:
+            raise PydumpError("ptrace loader did not confirm Agent start")
+
     monkeypatch.setattr(cli, "resolve_target", lambda *_args: target)
     monkeypatch.setattr(cli, "verify_agent", lambda *_args: None)
     monkeypatch.setattr(cli, "install_agent", lambda *_args: (agent, "/tmp/agent.so"))
-    monkeypatch.setattr(cli, "inject", fail_injection)
+    monkeypatch.setattr(cli, "select_loader", lambda **_kwargs: FailingLoader())
     monkeypatch.setattr(cli.socket, "socket", lambda *_args: FakeListener())
     monkeypatch.setattr(cli.threading, "Thread", FakeThread)
     monkeypatch.setattr(cli.os, "chown", lambda *_args: None)

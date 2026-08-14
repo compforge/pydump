@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/compforge/pydump/capture/injector/internal/injector"
+	"github.com/compforge/pydump/capture/loader/injector/internal/injector"
 )
 
 func main() {

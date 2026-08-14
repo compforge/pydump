@@ -11,10 +11,10 @@ from pathlib import Path
 
 from pydump.collector import CaptureStats, Collector
 from pydump.errors import PydumpError
-from pydump.injector import inject, install_agent
+from pydump.loader import LoaderKind, LoadRequest, install_agent, select_loader
 from pydump.target import resolve_target, verify_agent
 
-_INJECTION_POLL_SECONDS = 0.1
+_LOADER_POLL_SECONDS = 0.1
 
 
 def parser() -> argparse.ArgumentParser:
@@ -51,22 +51,39 @@ def parser() -> argparse.ArgumentParser:
         help="native agent shared library built for the target CPython minor",
     )
     result.add_argument(
-        "--injector",
+        "--loader",
+        choices=[kind.value for kind in LoaderKind],
+        default=LoaderKind.AUTO.value,
+        help="Agent loader strategy (default: auto; prefers GDB when available)",
+    )
+    result.add_argument(
+        "--gdb",
         type=Path,
         default=None,
-        help="native ptrace injector executable for the Collector architecture",
+        help="GDB executable used by the gdb loader",
+    )
+    result.add_argument(
+        "--ptrace-loader",
+        type=Path,
+        default=None,
+        help="native ptrace loader executable for the target architecture",
     )
     result.add_argument("--timeout", type=float, default=30.0, help=argparse.SUPPRESS)
     return result
 
 
 def run(arguments: argparse.Namespace) -> Path:
-    if sys.platform != "linux":
-        raise PydumpError("live capture is supported only on Linux glibc hosts")
     target = resolve_target(arguments.pid, arguments.docker_container)
     agent = arguments.agent or _bundled_agent(target.python_minor)
     verify_agent(agent, target)
+    loader = select_loader(
+        target=target,
+        kind=LoaderKind(arguments.loader),
+        gdb=arguments.gdb,
+        ptrace_loader=arguments.ptrace_loader,
+    )
     _, agent_target_path = install_agent(target, agent)
+    print(f"Loader: {loader.kind.value} ({loader.executable})")
 
     nonce = os.urandom(16)
     with tempfile.TemporaryDirectory(prefix="pydump-", dir=target.root / "tmp") as host_temp:
@@ -81,44 +98,45 @@ def run(arguments: argparse.Namespace) -> Path:
             os.chown(socket_host_path, uid, gid)
             listener.listen(1)
             listener.settimeout(arguments.timeout)
-            injection_error: list[BaseException] = []
+            loader_error: list[BaseException] = []
             attach_started = time.monotonic()
 
-            def attach() -> None:
+            def load_agent() -> None:
                 try:
-                    inject(
-                        target=target,
-                        agent_target_path=agent_target_path,
-                        socket_target_path=socket_target_path,
-                        nonce=nonce,
-                        timeout=arguments.timeout,
-                        injector_path=arguments.injector,
+                    loader.start(
+                        LoadRequest(
+                            target=target,
+                            agent_target_path=agent_target_path,
+                            socket_target_path=socket_target_path,
+                            nonce=nonce,
+                            timeout=arguments.timeout,
+                        )
                     )
                 except BaseException as error:
-                    injection_error.append(error)
+                    loader_error.append(error)
 
-            thread = threading.Thread(target=attach, name="pydump-attach", daemon=True)
+            thread = threading.Thread(target=load_agent, name="pydump-load-agent", daemon=True)
             thread.start()
             deadline = attach_started + arguments.timeout
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    # inject() has the same deadline, so it is already completing here. Wait for
-                    # its specific injector failure instead of racing it with a generic timeout.
+                    # Loader.start() has the same deadline, so it is already completing here. Wait
+                    # for its specific failure instead of racing it with a generic timeout.
                     thread.join()
-                    if injection_error:
-                        raise injection_error[0]
+                    if loader_error:
+                        raise loader_error[0]
                     raise PydumpError(
                         f"agent for PID {target.host_pid} did not connect within "
                         f"{arguments.timeout:g}s"
                     )
-                listener.settimeout(min(_INJECTION_POLL_SECONDS, remaining))
+                listener.settimeout(min(_LOADER_POLL_SECONDS, remaining))
                 try:
                     connection, _ = listener.accept()
                     break
                 except TimeoutError as error:
-                    if injection_error:
-                        raise injection_error[0] from error
+                    if loader_error:
+                        raise loader_error[0] from error
             with connection:
                 connection.settimeout(arguments.timeout)
                 started = time.monotonic()
@@ -140,10 +158,10 @@ def run(arguments: argparse.Namespace) -> Path:
                 path, count = collector.capture(connection, arguments.file)
                 stats = collector.stats
             thread.join(arguments.timeout)
-            if injection_error:
+            if loader_error:
                 # Collector has already validated and atomically published this artifact.
-                # Injector teardown failures must not delete a successfully delivered result.
-                raise injection_error[0]
+                # Loader teardown failures must not delete a successfully delivered result.
+                raise loader_error[0]
             print()
             print(f"Heap file saved: {path} ({count} objects, {time.monotonic() - started:.2f}s)")
             if stats is not None:
