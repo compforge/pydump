@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,15 +91,19 @@ def test_gdb_loader_waits_for_pending_call_safepoint(
     executable = tmp_path / "gdb"
     executable.touch(mode=0o755)
     captured: list[str] = []
+    script = ""
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal script
         captured.extend(command)
+        script = Path(command[command.index("-x") + 1]).read_text()
         return subprocess.CompletedProcess(command, 0, "PYDUMP_AGENT_STARTED=0\n")
 
     monkeypatch.setattr(gdb_module.subprocess, "run", run)
     GdbLoader(executable).start(request())
 
-    commands = [captured[index + 1] for index, value in enumerate(captured[:-1]) if value == "-ex"]
+    assert "-ex" not in captured
+    commands = script.splitlines()
     breakpoint = commands.index("break PyCallable_Check")
     pending_call = next(
         index for index, value in enumerate(commands) if value.startswith("set $pydump_pending=")
@@ -109,6 +114,41 @@ def test_gdb_loader_waits_for_pending_call_safepoint(
     )
     assert breakpoint < pending_call < resume < load_agent
     assert "Py_AddPendingCall" in commands[pending_call]
+    assert commands[pending_call + 1 : resume] == [
+        "if $pydump_pending != 0",
+        '  printf "PYDUMP_PENDING_CALL_FAILED: %d\\n", $pydump_pending',
+        "  quit 80",
+        "end",
+    ]
+
+
+@pytest.mark.skipif(shutil.which("gdb") is None, reason="GDB is not installed")
+def test_gdb_command_file_honors_false_conditional(tmp_path: Path) -> None:
+    script = tmp_path / "conditional.gdb"
+    script.write_text(
+        "\n".join(
+            [
+                "set $pydump_pending = 0",
+                "if $pydump_pending != 0",
+                "  quit 80",
+                "end",
+                'printf "PYDUMP_GDB_CONDITION_OK\\n"',
+                "quit",
+            ]
+        )
+    )
+
+    process = subprocess.run(
+        [shutil.which("gdb") or "gdb", "--batch", "--nx", "-x", str(script)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=10,
+    )
+
+    assert process.returncode == 0, process.stdout
+    assert "PYDUMP_GDB_CONDITION_OK" in process.stdout
 
 
 def test_gdb_loader_rejects_inferior_call_failure_with_zero_exit(

@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +22,45 @@ class GdbLoader:
     def start(self, request: LoadRequest) -> None:
         # Reach a CPython safe point before dlopen. Attaching at an arbitrary instruction may
         # otherwise stop a thread while it owns an allocator, GC, or dynamic-loader lock.
-        command = [
+        script = "\n".join(
+            [
+                "set debuginfod enabled off",
+                "set unwindonsignal on",
+                "break PyCallable_Check",
+                (
+                    "set $pydump_pending=(int)Py_AddPendingCall("
+                    "(int (*)(void *))PyCallable_Check, (void *)0)"
+                ),
+                "if $pydump_pending != 0",
+                '  printf "PYDUMP_PENDING_CALL_FAILED: %d\\n", $pydump_pending',
+                "  quit 80",
+                "end",
+                "continue",
+                "delete 1",
+                f'set $pydump_agent=(void*)dlopen("{_gdb_string(request.agent_target_path)}", 2)',
+                "if $pydump_agent == 0",
+                '  printf "PYDUMP_DLOPEN_FAILED: %s\\n", (char*)dlerror()',
+                "  quit 81",
+                "end",
+                'set $pydump_start=(void*)dlsym($pydump_agent, "pydump_start")',
+                "if $pydump_start == 0",
+                '  printf "PYDUMP_DLSYM_FAILED: %s\\n", (char*)dlerror()',
+                "  quit 82",
+                "end",
+                (
+                    "set $pydump_rc=(int)((int (*)(char*, char*))$pydump_start)"
+                    f'("{_gdb_string(request.socket_target_path)}", "{request.nonce.hex()}")'
+                ),
+                'printf "PYDUMP_AGENT_STARTED=%d\\n", $pydump_rc',
+                "if $pydump_rc != 0",
+                '  printf "PYDUMP_START_FAILED: %d\\n", $pydump_rc',
+                "  quit 83",
+                "end",
+                "detach",
+                "quit",
+            ]
+        )
+        command_prefix = [
             str(self.executable),
             "--batch",
             "--nx",
@@ -29,87 +68,33 @@ class GdbLoader:
             "--readnow",
             "-iex",
             f"set sysroot /proc/{request.target.host_pid}/root",
-            "-ex",
-            "set debuginfod enabled off",
-            "-ex",
-            "set unwindonsignal on",
-            "-ex",
-            "break PyCallable_Check",
-            "-ex",
-            (
-                "set $pydump_pending=(int)Py_AddPendingCall("
-                "(int (*)(void *))PyCallable_Check, (void *)0)"
-            ),
-            "-ex",
-            "if $pydump_pending != 0",
-            "-ex",
-            'printf "PYDUMP_PENDING_CALL_FAILED: %d\\n", $pydump_pending',
-            "-ex",
-            "quit 80",
-            "-ex",
-            "end",
-            "-ex",
-            "continue",
-            "-ex",
-            "delete 1",
-            "-ex",
-            f'set $pydump_agent=(void*)dlopen("{_gdb_string(request.agent_target_path)}", 2)',
-            "-ex",
-            "if $pydump_agent == 0",
-            "-ex",
-            'printf "PYDUMP_DLOPEN_FAILED: %s\\n", (char*)dlerror()',
-            "-ex",
-            "quit 81",
-            "-ex",
-            "end",
-            "-ex",
-            'set $pydump_start=(void*)dlsym($pydump_agent, "pydump_start")',
-            "-ex",
-            "if $pydump_start == 0",
-            "-ex",
-            'printf "PYDUMP_DLSYM_FAILED: %s\\n", (char*)dlerror()',
-            "-ex",
-            "quit 82",
-            "-ex",
-            "end",
-            "-ex",
-            (
-                "set $pydump_rc=(int)((int (*)(char*, char*))$pydump_start)"
-                f'("{_gdb_string(request.socket_target_path)}", "{request.nonce.hex()}")'
-            ),
-            "-ex",
-            'printf "PYDUMP_AGENT_STARTED=%d\\n", $pydump_rc',
-            "-ex",
-            "if $pydump_rc != 0",
-            "-ex",
-            'printf "PYDUMP_START_FAILED: %d\\n", $pydump_rc',
-            "-ex",
-            "quit 83",
-            "-ex",
-            "end",
-            "-ex",
-            "detach",
-            "-ex",
-            "quit",
             "-p",
             str(request.target.host_pid),
         ]
         try:
-            process = subprocess.run(
-                command,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=request.timeout,
-            )
+            # GDB control structures only span lines inside a command file. Passing each line
+            # through an independent -ex option makes GDB execute the conditional body eagerly.
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix="pydump-gdb-", suffix=".gdb"
+            ) as command_file:
+                command_file.write(f"{script}\n")
+                command_file.flush()
+                command = command_prefix + ["-x", command_file.name]
+                process = subprocess.run(
+                    command,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=request.timeout,
+                )
         except subprocess.TimeoutExpired as error:
             raise PydumpError(
                 f"GDB loader for PID {request.target.host_pid} timed out after {request.timeout:g}s"
             ) from error
         output = process.stdout.strip()
         if process.returncode:
-            rendered = shlex.join(command[:7] + ["..."])
+            rendered = shlex.join(command_prefix + ["-x", "<temporary-command-file>"])
             detail = _gdb_failure_detail(output)
             raise PydumpError(
                 f"GDB loader failed for PID {request.target.host_pid} with code "
