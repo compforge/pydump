@@ -39,6 +39,23 @@ var (
 	}
 )
 
+func resolveClone(pid int, maps []mapping) (remoteSymbol, error) {
+	return findSymbol(pid, maps, []string{"clone", "__clone"})
+}
+
+func (target *tracee) startClone(
+	cloneAddress uintptr,
+	codeAddress uintptr,
+	childStack uintptr,
+	dataAddress uintptr,
+	childCode []byte,
+) (uintptr, error) {
+	if err := target.write(codeAddress, childCode); err != nil {
+		return 0, err
+	}
+	return target.call(cloneAddress, codeAddress, childStack, cloneVM, dataAddress)
+}
+
 func getRegisters(pid int, regs *registers) error {
 	return syscall.PtraceGetRegs(pid, regs)
 }

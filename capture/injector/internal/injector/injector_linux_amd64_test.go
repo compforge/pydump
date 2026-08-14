@@ -17,3 +17,20 @@ func TestSetSyscallArgumentsUsesR10ForFourthArgument(t *testing.T) {
 		t.Fatal("last three syscall arguments are incorrect")
 	}
 }
+
+func TestPrepareCloneUsesRawSyscallRegistersAndSeparateStacks(t *testing.T) {
+	var registers syscall.PtraceRegs
+	prepareClone(&registers, 0x1000, 0x203f, 0x3000, 0x4000, 0x5000)
+	if registers.Rip != 0x1000 || registers.Rax != syscall.SYS_CLONE {
+		t.Fatal("clone instruction pointer or syscall number is incorrect")
+	}
+	if registers.Rsp != 0x2030 || registers.Rbp != 0x2030 {
+		t.Fatal("parent stack is not 16-byte aligned")
+	}
+	if registers.Rdi != uint64(cloneVM) || registers.Rsi != 0x3000 {
+		t.Fatal("clone flags or child stack is incorrect")
+	}
+	if registers.R12 != 0x4000 || registers.R13 != 0x5000 {
+		t.Fatal("child bootstrap function or argument is incorrect")
+	}
+}
