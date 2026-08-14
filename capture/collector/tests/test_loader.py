@@ -85,26 +85,37 @@ def test_pydump_loader_surfaces_native_diagnostic(
         PydumpLoader(executable).start(request())
 
 
+@pytest.mark.parametrize(("machine", "argument_register"), [("x86_64", "$rdi"), ("aarch64", "$x0")])
 def test_gdb_loader_waits_for_pending_call_safepoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    machine: str,
+    argument_register: str,
 ) -> None:
     executable = tmp_path / "gdb"
     executable.touch(mode=0o755)
     captured: list[str] = []
+    captured_environment: dict[str, str] = {}
     script = ""
 
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         nonlocal script
         captured.extend(command)
+        captured_environment.update(kwargs["env"])  # type: ignore[arg-type]
         script = Path(command[command.index("-x") + 1]).read_text()
         return subprocess.CompletedProcess(command, 0, "PYDUMP_AGENT_STARTED=0\n")
 
+    monkeypatch.setenv("PYTHONPATH", "/target/python")
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-16")
+    monkeypatch.setenv("PYDUMP_TEST_ENV", "preserved")
     monkeypatch.setattr(gdb_module.subprocess, "run", run)
-    GdbLoader(executable).start(request())
+    GdbLoader(executable, machine).start(request())
 
     assert "-ex" not in captured
     commands = script.splitlines()
-    breakpoint = commands.index("break PyCallable_Check")
+    assert "set scheduler-locking off" in commands
+    assert "set architecture auto" in commands
+    breakpoint = commands.index(f"tbreak PyCallable_Check if {argument_register} == 0")
     pending_call = next(
         index for index, value in enumerate(commands) if value.startswith("set $pydump_pending=")
     )
@@ -120,6 +131,49 @@ def test_gdb_loader_waits_for_pending_call_safepoint(
         "  quit 80",
         "end",
     ]
+    assert "PYTHONPATH" not in captured_environment
+    assert "PYTHONIOENCODING" not in captured_environment
+    assert captured_environment["PYDUMP_TEST_ENV"] == "preserved"
+
+
+def test_gdb_probe_rejects_failed_disposable_inferior_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "gdb"
+    executable.touch(mode=0o755)
+    monkeypatch.setattr(
+        gdb_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
+    monkeypatch.setattr(
+        gdb_module,
+        "_probe_disposable_inferior",
+        lambda _path: "Couldn't write extended state status: Bad address.",
+    )
+
+    probe, loader = gdb_module.probe_gdb_loader(executable, "x86_64")
+
+    assert probe.available is False
+    assert "extended state status" in probe.detail
+    assert loader is None
+
+
+def test_gdb_probe_keeps_target_machine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    executable = tmp_path / "gdb"
+    executable.touch(mode=0o755)
+    monkeypatch.setattr(
+        gdb_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
+    monkeypatch.setattr(gdb_module, "_probe_disposable_inferior", lambda _path: None)
+
+    probe, loader = gdb_module.probe_gdb_loader(executable, "aarch64")
+
+    assert probe.available is True
+    assert loader is not None
+    assert loader.machine == "aarch64"
 
 
 @pytest.mark.skipif(shutil.which("gdb") is None, reason="GDB is not installed")
@@ -164,7 +218,7 @@ def test_gdb_loader_rejects_inferior_call_failure_with_zero_exit(
     )
 
     with pytest.raises(PydumpError, match="Couldn't write extended state status: Bad address"):
-        GdbLoader(executable).start(request())
+        GdbLoader(executable, "x86_64").start(request())
 
 
 def test_auto_loader_prefers_gdb(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,7 +228,7 @@ def test_auto_loader_prefers_gdb(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         selection,
         "probe_gdb_loader",
-        lambda _path: (LoaderProbe(LoaderKind.GDB, True, "ready"), gdb),
+        lambda _path, _machine: (LoaderProbe(LoaderKind.GDB, True, "ready"), gdb),
     )
     monkeypatch.setattr(
         selection,
@@ -203,7 +257,7 @@ def test_auto_loader_uses_ptrace_when_gdb_is_unavailable(
     monkeypatch.setattr(
         selection,
         "probe_gdb_loader",
-        lambda _path: (LoaderProbe(LoaderKind.GDB, False, "not found"), None),
+        lambda _path, _machine: (LoaderProbe(LoaderKind.GDB, False, "not found"), None),
     )
     monkeypatch.setattr(
         selection,
@@ -226,7 +280,7 @@ def test_explicit_loader_reports_probe_reason(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         selection,
         "probe_gdb_loader",
-        lambda _path: (LoaderProbe(LoaderKind.GDB, False, "gdb is broken"), None),
+        lambda _path, _machine: (LoaderProbe(LoaderKind.GDB, False, "gdb is broken"), None),
     )
 
     with pytest.raises(PydumpError, match="gdb: gdb is broken"):

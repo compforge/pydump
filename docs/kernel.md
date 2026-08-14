@@ -57,8 +57,13 @@ Agent 恢复 GC、释放 GIL；Collector 原子交付 artifact 并清理 session
 
 Loader 先验证 Collector 与目标 ELF 架构一致，并确认目标使用 glibc。自动选择优先使用可执行且能完成
 自身 probe 的 GDB；GDB 不可用时才选择随包发布的同架构 `pydump-loader`。显式选择只探测指定 Loader。
-probe 不 attach、不修改目标状态；Loader 一旦开始 attach，失败后不得自动切换策略重试，因为前一次
+probe 不 attach、不修改业务目标状态；Loader 一旦开始 attach，失败后不得自动切换策略重试，因为前一次
 尝试可能已经完成 `dlopen` 或提交 pending call，重试会制造并发 session。
+
+GDB 的版本号和可执行性不足以证明 inferior call 可用：寄存器写回还取决于当前 CPU 与 host kernel。
+GDB probe 会启动一次性 CPython helper，并对它执行与正式链路同形的 `Py_AddPendingCall`；只有显式收到
+成功标记才可选择该 GDB。probe 不 attach 业务 PID，因此能够在触碰目标进程前淘汰无法安全恢复寄存器的
+GDB/kernel 组合。
 
 GDB Loader 利用成熟调试器完成寄存器和调用约定适配。它先通过 `Py_AddPendingCall` 让解释器到达安全点，
 再执行 `dlopen` 和 `pydump_start`，确认 Agent thread 已启动后立即 detach，不参与后续对象遍历。
