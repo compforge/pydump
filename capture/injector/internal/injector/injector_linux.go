@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -57,6 +58,11 @@ type tracee struct {
 }
 
 func Inject(options Options) (result error) {
+	// Linux records the tracer as a specific thread, not merely as this process.
+	// Keep every ptrace call on the thread that attached across polling sleeps.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	if options.Timeout <= 0 {
 		return errors.New("timeout must be positive")
 	}
