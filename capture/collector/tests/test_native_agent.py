@@ -54,7 +54,7 @@ time.sleep(60)
 
 @pytest.mark.skipif(
     "PYDUMP_NATIVE_AGENT" not in os.environ or "PYDUMP_PTRACE_INJECTOR" not in os.environ,
-    reason="set matching native Agent and ptrace injector paths",
+    reason="set matching native Agent and ptrace loader paths",
 )
 def test_ptrace_injector_captures_a_real_cpython_heap(tmp_path: Path) -> None:
     agent = Path(os.environ["PYDUMP_NATIVE_AGENT"]).resolve()
@@ -91,7 +91,9 @@ while True:
                 str(output),
                 "--agent",
                 str(agent),
-                "--injector",
+                "--loader",
+                "ptrace",
+                "--ptrace-loader",
                 str(injector),
                 "--no-attribute",
                 "--str-repr-len",
